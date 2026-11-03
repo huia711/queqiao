@@ -57,7 +57,7 @@ final class ServiceController {
 
         let task = Process()
         task.executableURL = python
-        task.arguments = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"]
+        task.arguments = ["-m", "uvicorn", "app.main:asgi", "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"]
         task.currentDirectoryURL = server
         var environment = ProcessInfo.processInfo.environment
         // Finder-launched apps get a minimal PATH; add the usual TeX and Homebrew locations.

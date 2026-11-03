@@ -13,4 +13,4 @@ fi
 HOST="${QUEQIAO_HOST:-127.0.0.1}"
 PORT="${QUEQIAO_PORT:-8686}"
 echo "鹊桥 Queqiao: http://${HOST}:${PORT}"
-exec .venv/bin/python -m uvicorn app.main:app --host "$HOST" --port "$PORT" --log-level warning
+exec .venv/bin/python -m uvicorn app.main:asgi --host "$HOST" --port "$PORT" --log-level warning

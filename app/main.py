@@ -49,6 +49,25 @@ async def gateway_guard(request: Request, call_next):
     return await call_next(request)
 
 
+class StripBasePath:
+    """ASGI wrapper: accept both /queqiao/... (proxy keeps the prefix) and /... (proxy strips it)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        prefix = base_path()
+        if prefix and scope.get("type") in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == prefix or path.startswith(prefix + "/"):
+                scope = dict(scope)
+                scope["path"] = path[len(prefix):] or "/"
+                raw = scope.get("raw_path")
+                if raw:
+                    scope["raw_path"] = raw[len(prefix.encode()):] or b"/"
+        await self.inner(scope, receive, send)
+
+
 def page(name: str) -> HTMLResponse:
     """Serve an HTML page; under a prefix, root-relative URLs are rewritten to include it."""
     html = (web_dir / name).read_text("utf-8")
@@ -344,3 +363,6 @@ async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:
 
 
 app.mount("/static", StaticFiles(directory=web_dir), name="static")
+
+# uvicorn serves `asgi`; it accepts requests with or without the base-path prefix.
+asgi = StripBasePath(app)
