@@ -22,13 +22,15 @@ PLAN_SYSTEM = """你是学术检索助手，把用户对论文的描述转换成
 用户可能给出：不完整的标题、中文描述、参考文献条目、作者和年份、模型或 benchmark 名称。
 只输出 JSON：
 {"title": "如果能确定英文标题就填写，否则为空字符串",
+ "title_guesses": ["如果描述的像某篇知名论文（例如某个方法或 benchmark 的原始论文），写出你猜测的原始英文标题，最多 3 个；不确定就留空列表"],
  "authors": ["可能的作者姓氏，没有就留空"],
  "groups": [["英文关键词或短语", "..."], ["另一种说法", "..."]],
  "year_from": null, "year_to": null}
 规则：
 - groups 给 2-4 组，每组 2-3 个英文词或短语，同组内是 AND 关系；不同组用不同的同义说法。
 - 短语要是论文摘要里可能出现的词，例如 "GUI agent"、"benchmark"、"video reasoning"。
-- 不确定的内容不要写，不要编造标题或作者。"""
+- 用户提到方法名或缩写（如 DPO、ReAct、OSWorld）时，至少一组要包含它的全称。
+- title_guesses 只用于检索，结果会和真实论文核对，所以可以大胆猜；authors 不确定就不要写。"""
 
 RANK_SYSTEM = """你是学术检索助手。给定用户的查询和一组真实的 arXiv 候选论文，
 挑出最符合查询的论文并排序。只能使用候选列表里的编号。
@@ -65,11 +67,13 @@ def _year_filter(plan: dict) -> str:
 def build_queries(plan: dict, raw: str) -> list[str]:
     queries: list[str] = []
     years = _year_filter(plan)
-    title = _term(plan.get("title") or "")
-    if len(title) > 8:
-        queries.append(_phrase("ti", title))
-        words = [word for word in title.split() if len(word) > 3][:6]
-        if len(words) >= 2:
+    titles = [plan.get("title") or ""] + [str(item) for item in (plan.get("title_guesses") or [])[:3]]
+    for index, raw_title in enumerate(dict.fromkeys(_term(item) for item in titles if item)):
+        if len(raw_title) <= 8:
+            continue
+        queries.append(_phrase("ti", raw_title))
+        words = [word for word in raw_title.split() if len(word) > 3][:6]
+        if index == 0 and len(words) >= 2:
             queries.append(" AND ".join(f"ti:{word}" for word in words))
     authors = [_term(name).split(" ")[-1] for name in plan.get("authors") or [] if _term(name)]
     for group in (plan.get("groups") or [])[:4]:
@@ -84,7 +88,7 @@ def build_queries(plan: dict, raw: str) -> list[str]:
     ascii_raw = _term(raw)
     if not queries and len(ascii_raw) > 3:
         queries.append(" AND ".join(f"all:{word}" for word in ascii_raw.split()[:8]))
-    return list(dict.fromkeys(query for query in queries if query))[:6]
+    return list(dict.fromkeys(query for query in queries if query))[:8]
 
 
 def broad_query(plan: dict) -> str:
