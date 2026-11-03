@@ -4,6 +4,7 @@ import asyncio
 import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import arxiv, notes
+from . import arxiv, auth, notes
 from .compile import has_tex
 from .config import settings
 from .fonts import cjk_fonts
@@ -38,14 +39,42 @@ def base_path() -> str:
     return f"/{value}" if value else ""
 
 
+PUBLIC_PATHS = {"/login", "/logout", "/favicon.ico"}
+
+
+def safe_next(target: str | None) -> str:
+    """App-relative path to return to after login; anything else falls back to the home page."""
+    target = (target or "").strip()
+    if not target.startswith("/") or target.startswith("//") or "\\" in target or len(target) > 2000:
+        return "/"
+    if any(ord(char) < 32 for char in target) or target.split("?", 1)[0] in PUBLIC_PATHS:
+        return "/"
+    return target
+
+
+def client_key(request: Request) -> str:
+    forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "")
+    forwarded = forwarded.split(",", 1)[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
 @app.middleware("http")
-async def gateway_guard(request: Request, call_next):
-    """When a gateway secret is configured, only accept requests that came through the gateway."""
+async def access_guard(request: Request, call_next):
+    """Enforce the gateway secret and, when a password is configured, a login session."""
     secret = settings.gateway_secret
     if secret:
         given = request.headers.get(GATEWAY_SECRET_HEADER, "")
         if not hmac.compare_digest(given, secret):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
+    path = request.scope.get("path", "/")
+    if auth.enabled() and path not in PUBLIC_PATHS and not path.startswith("/static/"):
+        if not auth.session_valid(request.cookies.get(auth.COOKIE)):
+            if path.startswith("/api/"):
+                return JSONResponse({"detail": "需要登录"}, status_code=401)
+            target = path + (f"?{request.url.query}" if request.url.query else "")
+            return RedirectResponse(
+                f"{base_path()}/login?next={quote(target, safe='')}", status_code=303
+            )
     return await call_next(request)
 
 
@@ -116,6 +145,7 @@ async def health() -> dict:
         "fonts": cjk_fonts(),
         "default_model": settings.default_model,
         "data_dir": str(settings.data_dir),
+        "auth": auth.enabled(),
     }
 
 
@@ -355,6 +385,48 @@ async def about_page() -> HTMLResponse:
 @app.get("/abs/{arxiv_path:path}")
 async def abs_redirect(arxiv_path: str) -> RedirectResponse:
     return RedirectResponse(f"{base_path()}/arxiv/{arxiv_path}")
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    if not auth.enabled() or auth.session_valid(request.cookies.get(auth.COOKIE)):
+        return RedirectResponse(f"{base_path()}{safe_next(request.query_params.get('next'))}", 303)
+    return page("login.html")
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request, password: str = Form(""), next_path: str = Form("/", alias="next")
+) -> RedirectResponse:
+    target = safe_next(next_path)
+    if not auth.enabled():
+        return RedirectResponse(f"{base_path()}{target}", 303)
+    key = client_key(request)
+    retry = f"{base_path()}/login?next={quote(target, safe='')}"
+    if auth.throttle.blocked(key):
+        return RedirectResponse(f"{retry}&error=locked", 303)
+    if not await asyncio.to_thread(auth.verify_password, password):
+        auth.throttle.failed(key)
+        return RedirectResponse(f"{retry}&error=1", 303)
+    auth.throttle.reset(key)
+    response = RedirectResponse(f"{base_path()}{target}", 303)
+    response.set_cookie(
+        auth.COOKIE,
+        auth.issue_session(),
+        max_age=int(settings.auth_max_age),
+        path=f"{base_path()}/",
+        httponly=True,
+        samesite="lax",
+        secure=request.headers.get("x-forwarded-proto", request.url.scheme) == "https",
+    )
+    return response
+
+
+@app.get("/logout")
+async def logout() -> RedirectResponse:
+    response = RedirectResponse(f"{base_path()}/login", 303)
+    response.delete_cookie(auth.COOKIE, path=f"{base_path()}/")
+    return response
 
 
 @app.exception_handler(HTTPException)

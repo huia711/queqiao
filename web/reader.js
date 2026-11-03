@@ -29,6 +29,7 @@
   let toolbarOpen = false;
   let currentTool = EDITOR.NONE;
   let lastSaveError = null;
+  let authWarned = false;
 
   // ---------------------------------------------------------------------------
   // Resolve which job this page shows (/arxiv/<id>?job=<jobId> or /job/<jobId>)
@@ -246,12 +247,19 @@
           body: data,
           keepalive: keepalive && data.byteLength < 60 * 1024,
         });
+        if (response.status === 401) {
+          // Do not navigate away: that would discard the unsaved annotations in this tab.
+          const error = new Error("登录已过期：请在新标签页重新登录，再回到这里按 ⌘S 保存");
+          error.authExpired = true;
+          throw error;
+        }
         if (!response.ok) {
           const detail = await response.json().catch(() => ({}));
           throw new Error(detail.detail || `HTTP ${response.status}`);
         }
         const result = await response.json();
         savedHash[kind] = hashAtSave;
+        authWarned = false;
         noteSummary[kind] = { exists: true, count: result.count, updated: result.updated, notes: result.notes };
         job.notes = { ...(job.notes || {}), [kind]: true };
         lastSaveError = null;
@@ -262,7 +270,15 @@
         lastSaveError = error.message;
         setSaveState("error");
         clearTimeout(saveTimers[kind]);
-        saveTimers[kind] = setTimeout(() => saveNotes(kind), 8000);
+        if (error.authExpired) {
+          if (!authWarned) {
+            authWarned = true;
+            window.open(url("/login"), "_blank", "noopener");
+            alert(error.message);
+          }
+        } else {
+          saveTimers[kind] = setTimeout(() => saveNotes(kind), 8000);
+        }
       }
     })();
     saving[kind] = task;

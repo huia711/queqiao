@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>登录 · 鹊桥 Queqiao</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script>
+    (function () {
+      var saved = localStorage.getItem("qq-theme");
+      var dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+      if (dark) document.documentElement.dataset.theme = "dark";
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="login-brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M3 22c4.2-7.5 8.6-11.2 13-11.2S24.8 14.5 29 22" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M8 22v-3.6M12.5 22v-6.2M16 22v-7.4M19.5 22v-6.2M24 22v-3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".55"/>
+        <path d="M2.5 25.5h27" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".35"/>
+        <circle cx="16" cy="7" r="2" fill="currentColor"/>
+      </svg>
+      <span class="brand-name">鹊桥<span>Queqiao</span></span>
+    </div>
+    <p class="eyebrow">PRIVATE ACCESS</p>
+    <h1>请输入访问密码</h1>
+    <p class="login-lead">鹊桥可以提交翻译、编辑笔记，所以需要登录。验证后 12 小时内无需重复输入。</p>
+    <p class="login-error" id="loginError" hidden></p>
+    <form method="post" action="/login" id="loginForm">
+      <input type="hidden" name="next" id="loginNext" value="/">
+      <label class="login-label" for="loginPassword">访问密码</label>
+      <input class="field" id="loginPassword" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button class="btn primary big login-submit" type="submit">进入鹊桥</button>
+    </form>
+  </main>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var next = params.get("next") || "/";
+      document.getElementById("loginNext").value = next;
+      var error = params.get("error");
+      if (error) {
+        var box = document.getElementById("loginError");
+        box.textContent = error === "locked" ? "尝试次数过多，请 10 分钟后再试。" : "密码不正确，请重试。";
+        box.hidden = false;
+      }
+    })();
+  </script>
+</body>
+</html>

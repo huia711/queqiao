@@ -42,6 +42,10 @@ FIELDS: dict[str, tuple[str, object, type]] = {
     "base_path": ("QUEQIAO_BASE_PATH", "", str),
     # Shared secret a fronting gateway must send in X-Hub-Node-Secret; empty disables the check.
     "gateway_secret": ("QUEQIAO_GATEWAY_SECRET", "", str),
+    # Optional access password (PBKDF2 hash from `python -m app.auth`) and session signing key.
+    "auth_hash": ("QUEQIAO_AUTH_HASH", "", str),
+    "auth_secret": ("QUEQIAO_AUTH_SECRET", "", str),
+    "auth_max_age": ("QUEQIAO_AUTH_MAX_AGE", 43200, int),
 }
 
 # Settings the in-app settings page may change.

@@ -17,8 +17,17 @@
     return pathname;
   }
 
+  function toLogin() {
+    const here = appPath(location.pathname) + location.search;
+    location.href = url(`/login?next=${encodeURIComponent(here)}`);
+  }
+
   async function api(path, options) {
     const response = await fetch(url(path), options);
+    if (response.status === 401) {
+      toLogin();
+      throw new Error("登录已过期，请重新登录");
+    }
     let data = null;
     try {
       data = await response.json();
@@ -97,6 +106,7 @@
     api,
     url,
     appPath,
+    toLogin,
     BASE,
     escapeHtml,
     isDark,
