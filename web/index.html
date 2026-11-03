@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>鹊桥 Queqiao · 论文翻译与对照阅读</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script>
+    (function () {
+      var saved = localStorage.getItem("qq-theme");
+      var dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+      if (dark) document.documentElement.dataset.theme = "dark";
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="鹊桥 Queqiao 首页">
+        <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <path d="M3 22c4.2-7.5 8.6-11.2 13-11.2S24.8 14.5 29 22" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M8 22v-3.6M12.5 22v-6.2M16 22v-7.4M19.5 22v-6.2M24 22v-3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".55"/>
+          <path d="M2.5 25.5h27" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".35"/>
+          <circle cx="16" cy="7" r="2" fill="currentColor"/>
+        </svg>
+        <span class="brand-name">鹊桥<span>Queqiao</span></span>
+      </a>
+      <nav aria-label="主导航">
+        <a href="/" data-route="home">翻译</a>
+        <a href="/library" data-route="library">文库</a>
+        <a href="/settings" data-route="settings">设置</a>
+        <a href="/about" data-route="about">说明</a>
+      </nav>
+      <div class="top-actions">
+        <span class="status-pill" id="gatewayStatus" title="Magpie 网关状态"><span class="dot"></span><span class="label">连接 Magpie…</span></span>
+        <button class="icon-btn" id="themeToggle" title="切换深色 / 浅色" aria-label="切换主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="homeView">
+    <section class="hero wrap">
+      <p class="eyebrow">SELF-HOSTED · PAPER TRANSLATION</p>
+      <h1>把论文渡到<em>中文</em>这一岸</h1>
+      <p class="lead">输入 arXiv 编号或上传 PDF。arXiv 论文按 LaTeX 源码翻译后重新排版，公式与引用原样保留；译文与原文并排对照，可高亮、批注，笔记自动保存在本机。</p>
+      <div class="hero-meta" id="heroMeta">
+        <span><b id="metaPapers">0</b> 篇论文</span>
+        <span class="divider"></span>
+        <span><b id="metaNotes">0</b> 篇有笔记</span>
+        <span class="divider"></span>
+        <span>翻译接口 <b>Magpie</b></span>
+        <span class="divider"></span>
+        <span id="metaModel">模型 —</span>
+      </div>
+    </section>
+
+    <section class="wrap">
+      <div class="composer">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="arxiv" role="tab" aria-selected="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l12 18M18 3L6 21"/></svg>
+            arXiv 论文
+          </button>
+          <button class="tab" data-tab="local" role="tab" aria-selected="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+            本地 PDF
+          </button>
+        </div>
+
+        <div class="panel" id="arxivPanel">
+          <p class="hint">输入 arXiv 地址或编号，示例：
+            <a href="/arxiv/1706.03762">1706.03762</a>
+            <a href="/arxiv/2305.18290">2305.18290</a>
+            <a href="/arxiv/2310.06825">2310.06825</a>
+          </p>
+          <form id="arxivForm" autocomplete="off">
+            <div class="field-row">
+              <input class="field" id="arxivInput" placeholder="https://arxiv.org/abs/1706.03762 或 1706.03762v7" spellcheck="false" aria-label="arXiv 地址或编号">
+              <button class="btn primary big" type="submit" id="arxivSubmit">翻译</button>
+            </div>
+            <div class="row">
+              <span class="spacer"></span>
+              <label class="model-select">模型 <select class="model-picker"></select></label>
+            </div>
+          </form>
+          <div class="notice hidden" id="arxivNotice"></div>
+        </div>
+
+        <div class="panel hidden" id="localPanel">
+          <label class="dropzone" id="dropzone">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0l-4 4m4-4l4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            <strong>点击选择，或把 PDF 拖到这里</strong>
+            <small>不超过 <span id="maxUpload">50</span> MB · 文件只保存在本机，翻译请求只发往 Magpie 网关</small>
+            <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden>
+          </label>
+          <div class="file-chip" id="fileChip">
+            <span class="name" id="fileName"></span>
+            <span class="meta" id="fileMeta"></span>
+            <button class="btn small" type="button" id="fileClear">移除</button>
+          </div>
+          <div class="options">
+            <label>页码范围（可选）<input class="field" id="pagesInput" placeholder="例如 1-5,8；留空即全部"></label>
+            <label>术语表 CSV（可选，列名 source,target）<input class="field" id="glossaryInput" type="file" accept=".csv,text/csv"></label>
+          </div>
+          <div class="row">
+            <button class="btn primary" type="button" id="uploadSubmit" disabled>开始翻译</button>
+            <span class="spacer"></span>
+            <label class="model-select">模型 <select class="model-picker"></select></label>
+          </div>
+          <div class="notice hidden" id="uploadNotice"></div>
+        </div>
+      </div>
+
+      <div class="process" aria-label="翻译流程">
+        <ol>
+          <li><span class="step">01</span>获取源码 / PDF</li>
+          <li><span class="step">02</span>屏蔽公式与引用</li>
+          <li><span class="step">03</span>Magpie 分段翻译</li>
+          <li><span class="step">04</span>校验并重新排版</li>
+          <li><span class="step">05</span>对照阅读与笔记</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section wrap">
+      <div class="section-title">
+        <span class="number">01</span>
+        <h2>最近翻译</h2>
+        <a class="count" href="/library" data-route-link>查看文库 →</a>
+      </div>
+      <div class="cards" id="recentJobs"><div class="empty">还没有翻译记录</div></div>
+    </section>
+  </main>
+
+  <main id="libraryView" class="hidden">
+    <section class="hero wrap">
+      <p class="eyebrow">LIBRARY</p>
+      <h1>文库</h1>
+      <p class="lead">所有翻译过的论文与文档。带有「笔记」标记的条目已在本机保存了你的高亮与批注。</p>
+    </section>
+    <section class="wrap">
+      <div class="toolrow">
+        <div class="seg-filter" id="libraryFilter">
+          <button class="on" data-filter="all">全部</button>
+          <button data-filter="notes">有笔记</button>
+          <button data-filter="arxiv">arXiv</button>
+          <button data-filter="upload">本地 PDF</button>
+          <button data-filter="active">进行中</button>
+          <button data-filter="failed">失败</button>
+        </div>
+        <input class="search-in" id="librarySearch" type="search" placeholder="搜索标题、编号或模型…" aria-label="搜索文库">
+      </div>
+      <div class="cards" id="allJobs"><div class="empty">还没有翻译记录</div></div>
+    </section>
+  </main>
+
+  <main id="settingsView" class="hidden">
+    <section class="hero wrap">
+      <p class="eyebrow">SETTINGS</p>
+      <h1>设置</h1>
+      <p class="lead">鹊桥自己不带大模型，翻译请求会发到一个 OpenAI 兼容的接口。默认是本机的 Magpie 网关；也可以填任何兼容 <code>/v1/chat/completions</code> 的地址。</p>
+    </section>
+    <section class="wrap prose">
+      <form id="settingsForm" class="settings-form" autocomplete="off">
+        <label class="setting">
+          <span class="setting-name">翻译接口地址</span>
+          <input class="field" name="magpie_base_url" placeholder="http://127.0.0.1:3425/v1" spellcheck="false">
+          <span class="setting-help">Magpie 桌面端「网关」里显示的本机地址加上 <code>/v1</code>。</span>
+        </label>
+        <label class="setting">
+          <span class="setting-name">API Key</span>
+          <input class="field" name="magpie_api_key" type="password" placeholder="本机 Magpie 不需要，留空即可" spellcheck="false">
+          <span class="setting-help">只保存在本机 <code>settings.json</code>，页面上只显示最后 4 位。</span>
+        </label>
+        <label class="setting">
+          <span class="setting-name">默认模型</span>
+          <select class="field" name="default_model" id="settingsModel"></select>
+          <span class="setting-help">新翻译默认使用的模型；翻译页仍可临时切换。</span>
+        </label>
+        <div class="setting-pair">
+          <label class="setting">
+            <span class="setting-name">源码翻译并发</span>
+            <input class="field" name="concurrency" type="number" min="1" max="64">
+          </label>
+          <label class="setting">
+            <span class="setting-name">PDF 翻译每秒请求</span>
+            <input class="field" name="pdf_qps" type="number" min="1" max="64">
+          </label>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="submit">保存设置</button>
+          <button class="btn" type="button" id="settingsTest">测试连接</button>
+          <span class="setting-status" id="settingsStatus"></span>
+        </div>
+      </form>
+      <div class="note-block" id="settingsWhere">设置保存在本机。</div>
+    </section>
+  </main>
+
+  <main id="aboutView" class="hidden">
+    <section class="hero wrap">
+      <p class="eyebrow">ABOUT</p>
+      <h1>鹊桥是怎么工作的</h1>
+      <p class="lead">一座搭在英文论文与中文读者之间的桥。所有大模型请求都经由本机的 Magpie 网关，没有账号、余额或充值；文件、译文和笔记只保存在本机。</p>
+    </section>
+    <section class="wrap prose">
+      <h2>两条翻译管线</h2>
+      <table class="kv-table">
+        <tr><td>arXiv 源码翻译</td><td>下载 LaTeX 源码，只翻译正文；公式、引用、标签、表格、代码全部屏蔽。逐段校验后用 XeLaTeX 重新编译；若某段译文导致编译错误，自动恢复该段英文后重编。</td></tr>
+        <tr><td>PDF 版式翻译</td><td>本地上传的 PDF，或没有源码、源码无法编译的 arXiv 论文，用 BabelDOC 做版面分析与回填，并生成双语对照 PDF。</td></tr>
+      </table>
+
+      <h2>笔记如何保存</h2>
+      <p>在阅读页顶部选择「高亮 / 批注 / 画笔」，就能在译文或原文上做笔记；展开 PDF 工具栏还可以插入图片、调整颜色和粗细。每次修改后约 1.5 秒，阅读器会把笔记写进 PDF（标准的 PDF 批注）并保存到本机服务，切换标签页或关闭页面时也会再存一次。</p>
+      <div class="note-block">保存位置：<code>data/jobs/&lt;任务&gt;/notes/</code>。<code>translated.annotated.pdf</code> 与 <code>original.annotated.pdf</code> 是带笔记的 PDF，可以直接用 Preview、Acrobat、Zotero 打开；<code>*.notes.json</code> 是笔记索引；<code>history/</code> 保留最近 20 个版本。原始译文不会被改动。</div>
+      <p>重新打开同一篇论文时会加载带笔记的版本，换浏览器、清理缓存都不会丢。「重试翻译」会重建译文 PDF，此时译文上的笔记会移入 <code>history/</code>；删除任务会一并删除笔记。</p>
+
+      <h2>阅读器</h2>
+      <p>原文 / 译文 / 分屏对照、交换左右、双向同步滚动、论文信息、笔记列表、夜间阅读、深色主题；快捷键 <code>1</code> <code>2</code> <code>3</code> 切换视图，<code>⌘S</code> 立即保存笔记。</p>
+
+      <h2>当前配置</h2>
+      <table class="kv-table" id="configTable"><tr><td>读取中…</td><td></td></tr></table>
+
+      <h2>常见问题</h2>
+      <p><strong>为什么 arXiv 论文会改用 PDF 翻译？</strong> 部分论文只提供 PDF，或源码依赖本机没有的宏包；这时会自动切换到 PDF 版式翻译，并在论文信息里注明原因。</p>
+      <p><strong>如何换模型？</strong> 在翻译页的「模型」下拉框选择，列表来自 Magpie 的 <code>/v1/models</code>。同一篇论文换模型会生成新的译文（新译文的笔记单独保存）。</p>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="wrap">
+      <span>鹊桥 Queqiao · 本地自托管论文翻译</span>
+      <span class="mono" id="footModel"></span>
+    </div>
+  </footer>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/home.js"></script>
+</body>
+</html>

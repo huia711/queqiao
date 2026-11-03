@@ -1,0 +1,15 @@
+# Local runtime data: papers, translations, notes, settings, caches
+data/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# App build output
+/build/
+/dist/
+
+# macOS
+.DS_Store

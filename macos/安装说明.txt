@@ -1,0 +1,18 @@
+鹊桥 Queqiao · 安装说明
+
+1. 把「鹊桥.app」拖到「Applications」。
+2. 第一次打开：在「应用程序」里右键「鹊桥」→「打开」→ 再点「打开」。
+   （应用没有经过 Apple 公证，macOS 会提示「无法验证开发者」。
+    若没有「打开」按钮：系统设置 → 隐私与安全性 → 最下方「仍要打开」。
+    或在终端执行：xattr -dr com.apple.quarantine /Applications/鹊桥.app ）
+3. 打开后在「设置」里填写翻译接口：
+   - 已安装 Magpie：保持默认 http://127.0.0.1:3425/v1 即可；
+   - 其他 OpenAI 兼容接口：填地址和 API Key，点「测试连接」。
+4. arXiv 源码翻译需要 TeX Live（MacTeX 或 brew install texlive）。
+   没有 TeX 时会自动改用 PDF 版式翻译，上传本地 PDF 不受影响。
+
+数据位置：~/Library/Application Support/Queqiao/（论文、译文、笔记、设置）
+日志：~/Library/Logs/Queqiao/server.log
+首次翻译 PDF 时会下载约 300MB 的版面分析模型和字体（缓存在 ~/.cache/babeldoc）。
+
+源码与问题反馈：https://github.com/huia711/queqiao

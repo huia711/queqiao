@@ -1,0 +1,51 @@
+source,target
+large language model,大语言模型
+language model,语言模型
+fine-tuning,微调
+pre-training,预训练
+pretraining,预训练
+reinforcement learning,强化学习
+reward model,奖励模型
+policy,策略
+self-attention,自注意力
+attention mechanism,注意力机制
+multi-head attention,多头注意力
+embedding,嵌入
+token,token
+tokenizer,分词器
+benchmark,基准
+baseline,基线
+ablation,消融
+ablation study,消融实验
+inference,推理
+reasoning,推理
+chain-of-thought,思维链
+in-context learning,上下文学习
+few-shot,少样本
+zero-shot,零样本
+hallucination,幻觉
+alignment,对齐
+preference,偏好
+agent,智能体
+retrieval-augmented generation,检索增强生成
+diffusion model,扩散模型
+encoder,编码器
+decoder,解码器
+transformer,Transformer
+gradient descent,梯度下降
+backpropagation,反向传播
+loss function,损失函数
+objective,目标函数
+regularization,正则化
+overfitting,过拟合
+generalization,泛化
+distillation,蒸馏
+knowledge distillation,知识蒸馏
+mixture of experts,混合专家
+quantization,量化
+throughput,吞吐量
+latency,延迟
+state-of-the-art,最先进
+ground truth,真实标签
+downstream task,下游任务
+robustness,鲁棒性
