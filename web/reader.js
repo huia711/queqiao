@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const { api, url, appPath, escapeHtml, isDark, setTheme, readerUrl, STATUS_TEXT, PIPELINE_TEXT } = window.QQ;
+  const { api, url, appPath, escapeHtml, isDark, setTheme, readerUrl, withKey, renderMarkdown, STATUS_TEXT, PIPELINE_TEXT } = window.QQ;
   const VIEWER = url("/static/vendor/pdfjs/web/viewer.html");
   const PAGE_COLOR_KEY = "qq-page-color";
   const MODEL_KEY = "qq-model";
@@ -48,6 +48,11 @@
       }
     }
     const arxivId = decodeURIComponent(path.replace(/^\/arxiv\//, "")).replace(/\/+$/, "");
+    const found = await api(`/api/arxiv/lookup?id=${encodeURIComponent(arxivId)}`).catch(() => ({ job: null }));
+    if (found.job) {
+      history.replaceState({}, "", readerUrl(found.job));
+      return found.job;
+    }
     const created = await api("/api/arxiv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -165,6 +170,11 @@
           }
         });
         doc.addEventListener("keydown", forwardShortcut);
+        doc.addEventListener("mouseup", () => setTimeout(() => onSelection(kind), 10));
+        doc.addEventListener("keyup", (event) => {
+          if (event.shiftKey) onSelection(kind);
+        });
+        doc.getElementById("viewerContainer").addEventListener("scroll", hideSelectPop, { passive: true });
       });
     };
     wait();
@@ -220,6 +230,7 @@
   }
 
   function markDirty(kind) {
+    if (!canWrite()) return;
     dirty[kind] = true;
     setSaveState("dirty");
     clearTimeout(saveTimers[kind]);
@@ -241,13 +252,19 @@
       const hashAtSave = storageHash(app);
       try {
         const data = await app.pdfDocument.saveDocument();
-        const response = await fetch(url(`/api/jobs/${job.id}/notes/${kind}`), {
+        const response = await fetch(url(`/api/jobs/${job.id}/notes/${kind}`), withKey({
           method: "PUT",
           headers: { "Content-Type": "application/pdf" },
           body: data,
           keepalive: keepalive && data.byteLength < 60 * 1024,
-        });
+        }));
         if (response.status === 401) {
+          const detail = await response.clone().json().catch(() => ({}));
+          if (detail.code === "invite") {
+            const error = new Error("需要邀请码才能保存笔记");
+            error.authExpired = true;
+            throw error;
+          }
           // Do not navigate away: that would discard the unsaved annotations in this tab.
           const error = new Error("登录已过期：请在新标签页重新登录，再回到这里按 ⌘S 保存");
           error.authExpired = true;
@@ -273,8 +290,11 @@
         if (error.authExpired) {
           if (!authWarned) {
             authWarned = true;
-            window.open(url("/login"), "_blank", "noopener");
-            alert(error.message);
+            if (/邀请码/.test(error.message)) window.QQ.openInvite(error.message);
+            else {
+              window.open(url("/login"), "_blank", "noopener");
+              alert(error.message);
+            }
           }
         } else {
           saveTimers[kind] = setTimeout(() => saveNotes(kind), 8000);
@@ -297,6 +317,7 @@
     if (state === "dirty") label.textContent = "有未保存的笔记…";
     else if (state === "saving") label.textContent = "正在保存…";
     else if (state === "error") label.textContent = "保存失败，稍后重试";
+    else if (state === "readonly") label.textContent = "只读";
     else if (state === "saved") {
       const time = new Date((updated || Date.now() / 1000) * 1000);
       label.textContent = `已保存 ${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
@@ -544,6 +565,7 @@
       <div class="links">
         ${meta.abs_url ? `<a class="btn small" href="${escapeHtml(meta.abs_url)}" target="_blank" rel="noopener">arXiv 原文 ↗</a>` : ""}
         ${job.artifacts.includes("log") ? `<a class="btn small" href="${job.artifact_urls.log}" target="_blank">构建日志</a>` : ""}
+        ${meta.zotero && meta.zotero.item ? `<a class="btn small" href="zotero://select/library/items/${escapeHtml(meta.zotero.item)}">在 Zotero 中打开</a>` : ""}
       </div>`;
   }
 
@@ -570,12 +592,14 @@
 
   async function poll() {
     clearTimeout(pollTimer);
+    const wasActive = job && (job.status === "queued" || job.status === "running");
     try {
       job = await api(`/api/jobs/${job.id}`);
       render();
     } catch (error) {
       toast(error.message);
     }
+    if (wasActive && job.status === "done" && !panels.assistPanel.classList.contains("hidden")) setTimeout(loadAssist, 1500);
     if (job.status === "queued" || job.status === "running") pollTimer = setTimeout(poll, 1500);
   }
 
@@ -627,8 +651,16 @@
     toast(syncEnabled ? "已开启同步滚动" : "已关闭同步滚动");
   });
 
-  const panels = { notesPanel: document.getElementById("notesPanel"), infoPanel: document.getElementById("infoPanel") };
-  const panelButtons = { notesPanel: document.getElementById("notesBtn"), infoPanel: document.getElementById("infoBtn") };
+  const panels = {
+    notesPanel: document.getElementById("notesPanel"),
+    infoPanel: document.getElementById("infoPanel"),
+    assistPanel: document.getElementById("assistPanel"),
+  };
+  const panelButtons = {
+    notesPanel: document.getElementById("notesBtn"),
+    infoPanel: document.getElementById("infoBtn"),
+    assistPanel: document.getElementById("assistBtn"),
+  };
 
   function togglePanel(name, force) {
     for (const [key, panel] of Object.entries(panels)) {
@@ -640,6 +672,10 @@
 
   panelButtons.notesPanel.addEventListener("click", () => togglePanel("notesPanel"));
   panelButtons.infoPanel.addEventListener("click", () => togglePanel("infoPanel"));
+  panelButtons.assistPanel.addEventListener("click", () => {
+    togglePanel("assistPanel");
+    if (!panels.assistPanel.classList.contains("hidden")) loadAssist();
+  });
   document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => togglePanel(button.dataset.close, false)));
 
   document.getElementById("toolbarBtn").addEventListener("click", (event) => {
@@ -783,10 +819,359 @@
   // Boot
   // ---------------------------------------------------------------------------
 
+  function canWrite() {
+    const access = window.QQ.access();
+    return !access || access.can_write;
+  }
+
+  // ---------------------------------------------------------------------------
+  // AI reading assistant: guide card, Q&A about selections, reference overview
+  // ---------------------------------------------------------------------------
+
+  const selectPop = document.getElementById("selectPop");
+  const qaInput = document.getElementById("qaInput");
+  let assistTab = "guide";
+  let assistData = null;
+  let assistTimer = null;
+  let pendingSelection = null;
+  let qaBusy = false;
+
+  function selectionPage(kind, selection) {
+    const node = selection.anchorNode && (selection.anchorNode.nodeType === 1 ? selection.anchorNode : selection.anchorNode.parentElement);
+    const page = node && node.closest && node.closest(".page[data-page-number]");
+    return page ? Number(page.dataset.pageNumber) : null;
+  }
+
+  function onSelection(kind) {
+    const frame = frames[kind];
+    const win = frame.contentWindow;
+    if (!win || currentTool !== EDITOR.NONE) return;
+    const selection = win.getSelection();
+    const text = selection ? selection.toString().replace(/\s+/g, " ").trim() : "";
+    if (!text || text.length < 2 || !selection.rangeCount) {
+      hideSelectPop();
+      return;
+    }
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    pendingSelection = { text: text.slice(0, 3000), page: selectionPage(kind, selection), side: kind };
+    selectPop.classList.remove("hidden");
+    const width = selectPop.offsetWidth || 260;
+    const left = Math.min(Math.max(8, frameRect.left + rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
+    const top = frameRect.top + rect.top - 44 < 60 ? frameRect.top + rect.bottom + 8 : frameRect.top + rect.top - 44;
+    selectPop.style.left = `${left}px`;
+    selectPop.style.top = `${top}px`;
+  }
+
+  function hideSelectPop() {
+    selectPop.classList.add("hidden");
+  }
+
+  selectPop.addEventListener("mousedown", (event) => event.preventDefault());
+  selectPop.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-ask]");
+    if (!button || !pendingSelection) return;
+    hideSelectPop();
+    openAssist("qa");
+    setContext(pendingSelection);
+    if (button.dataset.ask === "ask") {
+      qaInput.focus();
+      return;
+    }
+    sendQuestion(button.dataset.ask, "");
+  });
+  document.addEventListener("mousedown", (event) => {
+    if (!selectPop.contains(event.target)) hideSelectPop();
+  });
+
+  let questionContext = null;
+  function setContext(context) {
+    questionContext = context;
+    const box = document.getElementById("qaContext");
+    box.classList.toggle("hidden", !context);
+    if (context) {
+      const where = context.page ? `${context.side === "translated" ? "译文" : "原文"} p.${context.page}` : "";
+      box.querySelector("span").innerHTML = `<b>${escapeHtml(where || "选中")}</b>${escapeHtml(context.text.slice(0, 160))}${context.text.length > 160 ? "…" : ""}`;
+    }
+  }
+  document.getElementById("qaContextClear").addEventListener("click", () => setContext(null));
+
+  function openAssist(tab) {
+    togglePanel("assistPanel", true);
+    setAssistTab(tab);
+    loadAssist();
+  }
+
+  function setAssistTab(tab) {
+    assistTab = tab;
+    for (const button of document.querySelectorAll("#assistTabs button")) button.classList.toggle("on", button.dataset.tab === tab);
+    document.getElementById("guideBody").classList.toggle("hidden", tab !== "guide");
+    document.getElementById("qaBody").classList.toggle("hidden", tab !== "qa");
+    document.getElementById("qaForm").classList.toggle("hidden", tab !== "qa");
+    document.getElementById("refsBody").classList.toggle("hidden", tab !== "refs");
+    renderAssist();
+  }
+
+  document.getElementById("assistTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-tab]");
+    if (button) setAssistTab(button.dataset.tab);
+  });
+
+  async function loadAssist() {
+    if (!job) return;
+    clearTimeout(assistTimer);
+    try {
+      assistData = await api(`/api/jobs/${job.id}/assist`);
+    } catch (error) {
+      assistData = null;
+    }
+    renderAssist();
+    const running = assistData && (assistData.guide.status === "running" || assistData.references.status === "running");
+    if (running && !panels.assistPanel.classList.contains("hidden")) assistTimer = setTimeout(loadAssist, 3000);
+  }
+
+  function list(items) {
+    const values = (items || []).filter(Boolean);
+    return values.length ? `<ul>${values.map((item) => `<li>${renderInlineMd(item)}</li>`).join("")}</ul>` : "";
+  }
+
+  function renderInlineMd(text) {
+    return renderMarkdown(String(text)).replace(/^<p>|<\/p>$/g, "");
+  }
+
+  function stateBlock(state, kind) {
+    const label = kind === "guide" ? "导读" : "参考文献速览";
+    const ready = job.artifacts.includes("original");
+    if (!state || state.status === "none") {
+      const hint = kind === "guide"
+        ? "大模型通读全文，生成一句话总结、问题、贡献、方法、实验设置、关键结果、局限和值得看的图表。"
+        : "列出每篇参考文献在本文中的作用，并为能在 arXiv 上找到的文献写 TL;DR 和核心动机，大约需要 1–2 分钟。";
+      return `<div class="assist-empty"><p>${hint}</p>${ready ? `<button class="btn primary small writer-only" data-build="${kind}">生成${label}</button>` : "<p>原文下载完成后可用。</p>"}</div>`;
+    }
+    if (state.status === "running") return `<div class="assist-empty"><p><span class="spinner"></span>正在生成${label}：${escapeHtml(state.stage || "")}</p></div>`;
+    if (state.status === "failed") return `<div class="assist-empty"><p class="error">${escapeHtml(state.error || "生成失败")}</p><button class="btn small writer-only" data-build="${kind}" data-force="1">重新生成</button></div>`;
+    return "";
+  }
+
+  function renderGuide() {
+    const body = document.getElementById("guideBody");
+    const state = assistData && assistData.guide;
+    const pending = stateBlock(state, "guide");
+    if (pending) {
+      body.innerHTML = pending;
+      return;
+    }
+    const data = state.data || {};
+    const setup = data.setup || {};
+    const setupNames = { data: "数据 / 环境", baselines: "基线", metrics: "指标", compute: "规模 / 算力" };
+    const setupRows = Object.entries(setupNames).filter(([key]) => setup[key]).map(([key, name]) => `<span>${name}</span><span>${escapeHtml(setup[key])}</span>`).join("");
+    const figures = (data.figures || [])
+      .map((item) => `<button class="figure-item" data-goto="${item.page}"><b>${escapeHtml(item.label)}</b><span class="mono">p.${item.page}</span><em>${escapeHtml(item.why || item.caption)}</em></button>`)
+      .join("");
+    body.innerHTML = `
+      ${data.tldr ? `<p class="guide-tldr">${escapeHtml(data.tldr)}</p>` : ""}
+      ${data.problem ? `<h4>PROBLEM</h4><p>${renderInlineMd(data.problem)}</p>` : ""}
+      ${(data.contributions || []).length ? `<h4>CONTRIBUTIONS</h4>${list(data.contributions)}` : ""}
+      ${data.method ? `<h4>METHOD</h4><p>${renderInlineMd(data.method)}</p>` : ""}
+      ${setupRows ? `<h4>SETUP</h4><div class="kv">${setupRows}</div>` : ""}
+      ${(data.results || []).length ? `<h4>KEY RESULTS</h4>${list(data.results)}` : ""}
+      ${figures ? `<h4>FIGURES TO READ</h4><div class="figure-list">${figures}</div>` : ""}
+      ${(data.limitations || []).length ? `<h4>LIMITATIONS</h4>${list(data.limitations)}` : ""}
+      ${(data.questions || []).length ? `<h4>QUESTIONS</h4>${list(data.questions)}` : ""}
+      <p class="side-note">由 <code>${escapeHtml(state.model || "")}</code> 根据原文生成，可能有误；数字请对照原文核实。
+      <a href="#" class="writer-only" data-build="guide" data-force="1">重新生成</a></p>`;
+  }
+
+  function renderQa() {
+    const listBox = document.getElementById("qaList");
+    const items = (assistData && assistData.qa) || [];
+    const modeName = { explain: "解释", plain: "说人话", critique: "审稿视角", ask: "提问" };
+    const thinking = qaBusy ? `<div class="qa-item pending"><div class="qa-a"><span class="spinner"></span>正在阅读全文并回答…</div></div>` : "";
+    if (!items.length && !qaBusy) {
+      listBox.innerHTML = `<div class="assist-empty"><p>在译文或原文里<b>选中一段文字</b>，点浮出的「解释 / 说人话 / 审稿视角 / 提问」；也可以直接在下面提问。回答基于全文并标注页码，点页码可以跳转。</p></div>`;
+      return;
+    }
+    listBox.innerHTML = items
+      .map((item) => {
+        const where = item.page ? `${item.side === "translated" ? "译文" : "原文"} p.${item.page}` : "";
+        const question = item.mode === "ask" ? item.question : modeName[item.mode];
+        return `<div class="qa-item" data-qa="${escapeHtml(item.id)}">
+          ${item.selection ? `<blockquote class="qa-quote" ${item.page ? `data-goto="${item.page}" data-side="${escapeHtml(item.side)}"` : ""}>${where ? `<b>${escapeHtml(where)}</b>` : ""}${escapeHtml(item.selection.slice(0, 280))}${item.selection.length > 280 ? "…" : ""}</blockquote>` : ""}
+          <div class="qa-q"><span>${escapeHtml(question)}</span><button class="icon-btn writer-only" data-qa-delete="${escapeHtml(item.id)}" title="删除这条问答" aria-label="删除">×</button></div>
+          <div class="qa-a">${renderMarkdown(item.answer)}</div>
+        </div>`;
+      })
+      .join("") + thinking;
+    listBox.parentElement.scrollTop = listBox.parentElement.scrollHeight;
+  }
+
+  const WEIGHT_TEXT = { core: "核心", related: "相关", minor: "顺带" };
+  let refsFilter = "all";
+
+  function renderRefs() {
+    const body = document.getElementById("refsBody");
+    const state = assistData && assistData.references;
+    const pending = stateBlock(state, "references");
+    if (pending) {
+      body.innerHTML = pending;
+      return;
+    }
+    const data = state.data || { items: [] };
+    const counts = { core: 0, related: 0, minor: 0 };
+    for (const item of data.items) counts[item.weight] = (counts[item.weight] || 0) + 1;
+    const items = data.items.filter((item) => refsFilter === "all" || item.weight === refsFilter);
+    const filters = ["all", "core", "related", "minor"]
+      .map((key) => `<button data-ref-filter="${key}" class="${key === refsFilter ? "on" : ""}">${key === "all" ? `全部 ${data.items.length}` : `${WEIGHT_TEXT[key]} ${counts[key] || 0}`}</button>`)
+      .join("");
+    body.innerHTML = `
+      <p class="refs-summary">共 ${data.total} 篇，其中 ${data.on_arxiv} 篇在 arXiv 上找到摘要并生成了 TL;DR${data.truncated ? "（只处理了前 80 篇）" : ""}。</p>
+      <div class="seg-mini refs-filter">${filters}</div>
+      <div class="ref-list">${items
+        .map(
+          (item) => `<div class="ref-item weight-${item.weight}">
+          <div class="ref-head"><b>[${item.n}]</b><span class="chip ${item.weight === "core" ? "red" : ""}">${WEIGHT_TEXT[item.weight]}</span><span class="ref-year">${escapeHtml(item.year || "")}</span></div>
+          <div class="ref-title">${item.arxiv_id ? `<a href="https://arxiv.org/abs/${escapeHtml(item.arxiv_id)}" target="_blank" rel="noopener">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}</div>
+          <div class="ref-authors">${escapeHtml(item.authors || "")}${item.venue ? ` · ${escapeHtml(item.venue)}` : ""}</div>
+          ${item.role ? `<p class="ref-role"><b>在本文中</b>${escapeHtml(item.role)}</p>` : ""}
+          ${item.tldr ? `<p class="ref-tldr"><b>TL;DR</b>${escapeHtml(item.tldr)}</p>` : ""}
+          ${item.motivation ? `<p class="ref-tldr"><b>动机</b>${escapeHtml(item.motivation)}</p>` : ""}
+          ${item.arxiv_id ? `<div class="ref-actions"><a class="btn small" href="${url(`/arxiv/${item.arxiv_id}`)}" target="_blank">在鹊桥中打开</a></div>` : ""}
+        </div>`
+        )
+        .join("")}</div>
+      <p class="side-note">作用判断来自正文，TL;DR 只依据被引论文的 arXiv 摘要；不在 arXiv 上的文献只列出作用。</p>`;
+  }
+
+  function renderAssist() {
+    if (!job) return;
+    if (assistTab === "guide") renderGuide();
+    if (assistTab === "qa") renderQa();
+    if (assistTab === "refs") renderRefs();
+  }
+
+  async function sendQuestion(mode, question) {
+    if (qaBusy) return;
+    const context = questionContext;
+    const thread = document.getElementById("qaFollow").checked && !context
+      ? ((assistData && assistData.qa) || []).slice(-3).map((item) => ({ q: item.question, a: item.answer }))
+      : [];
+    qaBusy = true;
+    document.getElementById("qaSend").disabled = true;
+    renderQa();
+    try {
+      const item = await api(`/api/jobs/${job.id}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          selection: context ? context.text : "",
+          question,
+          mode,
+          page: context ? context.page : null,
+          side: context ? context.side : "translated",
+          thread,
+        }),
+      });
+      assistData = assistData || { qa: [], guide: {}, references: {} };
+      assistData.qa = [...(assistData.qa || []), item];
+      qaInput.value = "";
+      setContext(null);
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      qaBusy = false;
+      document.getElementById("qaSend").disabled = false;
+      renderQa();
+    }
+  }
+
+  document.getElementById("qaForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const question = qaInput.value.trim();
+    if (question) sendQuestion("ask", question);
+  });
+  qaInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      document.getElementById("qaForm").requestSubmit();
+    }
+  });
+
+  function gotoPage(page, side) {
+    const target = side && KINDS.includes(side) ? side : main.dataset.view === "original" ? "original" : "translated";
+    if (main.dataset.view !== "split" && main.dataset.view !== target) setView(target);
+    scrollToPosition(target, { page: Number(page), fraction: 0 }, true);
+  }
+
+  panels.assistPanel.addEventListener("click", async (event) => {
+    const build = event.target.closest("[data-build]");
+    const goto = event.target.closest("[data-goto]");
+    const pageRef = event.target.closest(".page-ref");
+    const remove = event.target.closest("[data-qa-delete]");
+    const filter = event.target.closest("[data-ref-filter]");
+    if (build) {
+      event.preventDefault();
+      const kind = build.dataset.build;
+      try {
+        const state = await api(`/api/jobs/${job.id}/${kind}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: Boolean(build.dataset.force) }),
+        });
+        assistData[kind === "guide" ? "guide" : "references"] = state;
+        renderAssist();
+        assistTimer = setTimeout(loadAssist, 2500);
+      } catch (error) {
+        toast(error.message);
+      }
+    } else if (goto) {
+      gotoPage(goto.dataset.goto, goto.dataset.side || "original");
+    } else if (pageRef) {
+      gotoPage(pageRef.dataset.page, "original");
+    } else if (remove) {
+      try {
+        await api(`/api/jobs/${job.id}/qa/${remove.dataset.qaDelete}`, { method: "DELETE" });
+        assistData.qa = assistData.qa.filter((item) => item.id !== remove.dataset.qaDelete);
+        renderQa();
+      } catch (error) {
+        toast(error.message);
+      }
+    } else if (filter) {
+      refsFilter = filter.dataset.refFilter;
+      renderRefs();
+    }
+  });
+
+  document.getElementById("exportMdItem").addEventListener("click", async () => {
+    moreMenu.classList.add("hidden");
+    await saveNow();
+    const link = document.createElement("a");
+    link.href = url(`/api/jobs/${job.id}/export.md`);
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  });
+
+  document.getElementById("zoteroItem").addEventListener("click", async () => {
+    moreMenu.classList.add("hidden");
+    await saveNow();
+    toast("正在发送到 Zotero…");
+    try {
+      const result = await api(`/api/jobs/${job.id}/zotero`, { method: "POST" });
+      toast(result.created ? "已在 Zotero 中新建条目并附上笔记" : "已更新 Zotero 中的笔记");
+      job.meta = { ...job.meta, zotero: { item: result.item } };
+      renderInfo();
+    } catch (error) {
+      toast(error.message);
+    }
+  });
+
   (async function boot() {
     setView(localStorage.getItem("qq-view") || "split");
     if (localStorage.getItem("qq-swapped") === "1") main.classList.add("swapped");
     setSaveState("idle");
+    await window.QQ.loadAccess();
+    if (!canWrite()) setSaveState("readonly");
     try {
       job = await resolveJob();
     } catch (error) {
@@ -800,5 +1185,14 @@
     render();
     loadNotes();
     if (job.status === "queued" || job.status === "running") poll();
+    window.addEventListener("qq-access", () => {
+      setSaveState(canWrite() ? "idle" : "readonly");
+      if (!canWrite()) {
+        currentTool = EDITOR.NONE;
+        renderTools();
+        KINDS.forEach(applyTool);
+      }
+      renderAssist();
+    });
   })();
 })();

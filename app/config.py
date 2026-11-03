@@ -46,10 +46,32 @@ FIELDS: dict[str, tuple[str, object, type]] = {
     "auth_hash": ("QUEQIAO_AUTH_HASH", "", str),
     "auth_secret": ("QUEQIAO_AUTH_SECRET", "", str),
     "auth_max_age": ("QUEQIAO_AUTH_MAX_AGE", 43200, int),
+    # "open" (everything allowed, for local use) or "invite" (writes and model calls need an invite code).
+    "access_mode": ("QUEQIAO_ACCESS_MODE", "open", str),
+    # Model for search, Q&A, reading guides, reference summaries and the daily digest; empty = default_model.
+    "assist_model": ("QUEQIAO_ASSIST_MODEL", "", str),
+    # Hour (0-23, server local time) to build the daily arXiv digest automatically; -1 disables it.
+    "digest_hour": ("QUEQIAO_DIGEST_HOUR", -1, int),
+    # Zotero Web API (https://www.zotero.org/settings/keys).
+    "zotero_user_id": ("QUEQIAO_ZOTERO_USER_ID", "", str),
+    "zotero_api_key": ("QUEQIAO_ZOTERO_API_KEY", "", str),
+    "zotero_collection": ("QUEQIAO_ZOTERO_COLLECTION", "", str),
 }
 
 # Settings the in-app settings page may change.
-EDITABLE = ("magpie_base_url", "magpie_api_key", "default_model", "preferred_models", "concurrency", "pdf_qps")
+EDITABLE = (
+    "magpie_base_url",
+    "magpie_api_key",
+    "default_model",
+    "assist_model",
+    "preferred_models",
+    "concurrency",
+    "pdf_qps",
+    "zotero_user_id",
+    "zotero_api_key",
+    "zotero_collection",
+)
+SECRET_KEYS = ("magpie_api_key", "zotero_api_key")
 
 
 def _default_data_dir() -> Path:
@@ -144,7 +166,7 @@ class Settings:
             if value is None or value == "" or value == []:
                 stored.pop(key, None)
                 continue
-            if key == "magpie_api_key" and str(value).startswith("••••••"):
+            if key in SECRET_KEYS and str(value).startswith("••••••"):
                 continue
             coerced = _coerce(value, kind)
             if kind is int and not 1 <= int(coerced) <= 64:
@@ -161,14 +183,18 @@ class Settings:
         return self.public()
 
     def public(self) -> dict:
-        """Editable settings for the UI (the API key is masked)."""
+        """Editable settings for the UI (API keys are masked)."""
         result = {}
         for key in EDITABLE:
             value = getattr(self, key)
-            if key == "magpie_api_key":
+            if key in SECRET_KEYS:
                 value = "" if value in ("", "magpie") else "••••••" + str(value)[-4:]
             result[key] = {"value": value, "source": self.source(key), "default": FIELDS[key][1]}
         return result
+
+    @property
+    def helper_model(self) -> str:
+        return (self.assist_model or "").strip() or self.default_model
 
 
 settings = Settings()

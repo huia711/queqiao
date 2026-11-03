@@ -3,6 +3,7 @@
 
   const STATUS_TEXT = { queued: "排队中", running: "翻译中", done: "已完成", failed: "失败" };
   const PIPELINE_TEXT = { latex: "源码翻译", babeldoc: "PDF 版式翻译" };
+  const KEY_STORAGE = "qq-invite";
   // Set by the server when Queqiao is served under a path prefix such as "/queqiao".
   const BASE = (window.QQ_BASE || "").replace(/\/+$/, "");
 
@@ -22,9 +23,100 @@
     location.href = url(`/login?next=${encodeURIComponent(here)}`);
   }
 
+  function inviteKey() {
+    return localStorage.getItem(KEY_STORAGE) || "";
+  }
+
+  function withKey(options) {
+    const merged = { ...(options || {}) };
+    const key = inviteKey();
+    if (key) merged.headers = { ...(merged.headers || {}), "X-Queqiao-Key": key };
+    return merged;
+  }
+
+  let access = null;
+  async function loadAccess(force = false) {
+    if (access && !force) return access;
+    try {
+      const response = await fetch(url("/api/access/me"), withKey());
+      access = response.ok ? await response.json() : { mode: "open", can_write: true };
+    } catch (error) {
+      access = { mode: "open", can_write: true };
+    }
+    document.documentElement.dataset.access = access.can_write ? (access.role === "admin" ? "admin" : "member") : "guest";
+    renderAccessChip();
+    window.dispatchEvent(new CustomEvent("qq-access", { detail: access }));
+    return access;
+  }
+
+  function renderAccessChip() {
+    const chip = document.getElementById("accessChip");
+    if (!chip || !access) return;
+    chip.classList.toggle("hidden", access.mode !== "invite");
+    chip.textContent = access.can_write ? `${access.name}` : "输入邀请码";
+    chip.title = access.can_write ? `已用邀请码登录（${access.role === "admin" ? "管理员" : "成员"}），点击管理` : "访客只能阅读已有的翻译；输入邀请码后可以提交翻译、使用 AI 研读";
+    chip.classList.toggle("on", Boolean(access.can_write));
+  }
+
+  function ensureInviteDialog() {
+    let dialog = document.getElementById("inviteDialog");
+    if (dialog) return dialog;
+    dialog = document.createElement("dialog");
+    dialog.id = "inviteDialog";
+    dialog.className = "model-dialog invite-dialog";
+    dialog.innerHTML = `<form method="dialog">
+      <strong>邀请码</strong>
+      <p class="invite-reason">翻译和 AI 研读会消耗模型额度，只对持有邀请码的人开放。没有邀请码也可以自由阅读文库里已有的论文。</p>
+      <input class="field" name="code" placeholder="qq-…" autocomplete="off" spellcheck="false">
+      <p class="invite-state"></p>
+      <div class="row">
+        <button class="btn ghost danger" value="logout" type="submit" data-role="logout">退出</button>
+        <span class="spacer"></span>
+        <button class="btn" value="cancel">取消</button>
+        <button class="btn primary" value="ok">确定</button>
+      </div>
+    </form>`;
+    document.body.appendChild(dialog);
+    dialog.addEventListener("close", async () => {
+      const value = dialog.querySelector("[name=code]").value.trim();
+      if (dialog.returnValue === "logout") {
+        localStorage.removeItem(KEY_STORAGE);
+        await loadAccess(true);
+      } else if (dialog.returnValue === "ok" && value) {
+        localStorage.setItem(KEY_STORAGE, value);
+        const result = await loadAccess(true);
+        if (!result.can_write) {
+          localStorage.removeItem(KEY_STORAGE);
+          await loadAccess(true);
+          openInvite("邀请码无效或已停用");
+          return;
+        }
+      }
+      if (dialog._resolve) dialog._resolve(access && access.can_write);
+      dialog._resolve = null;
+    });
+    return dialog;
+  }
+
+  function openInvite(message) {
+    const dialog = ensureInviteDialog();
+    dialog.querySelector(".invite-state").textContent = message || (access && access.can_write ? `当前：${access.name}` : "");
+    dialog.querySelector("[name=code]").value = "";
+    dialog.querySelector("[data-role=logout]").classList.toggle("hidden", !inviteKey());
+    return new Promise((resolve) => {
+      dialog._resolve = resolve;
+      if (!dialog.open) dialog.showModal();
+    });
+  }
+
   async function api(path, options) {
-    const response = await fetch(url(path), options);
+    const response = await fetch(url(path), withKey(options));
     if (response.status === 401) {
+      const body = await response.clone().json().catch(() => ({}));
+      if (body.code === "invite") {
+        openInvite(body.detail);
+        throw new Error(body.detail || "需要邀请码");
+      }
       toLogin();
       throw new Error("登录已过期，请重新登录");
     }
@@ -45,6 +137,49 @@
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
     })[char]);
+  }
+
+  // Minimal, escape-first Markdown for model answers: paragraphs, bullet / numbered lists, **bold**,
+  // `code`, $math$ (shown as code) and page references like [p.3] (clickable via data-page).
+  function renderInline(text) {
+    return escapeHtml(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\$([^$\n]{1,200})\$/g, '<code class="math">$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[p\.(\d+)(?:[-–](\d+))?\]/g, (match, page, end) => `<a class="page-ref" data-page="${page}">p.${page}${end ? `–${end}` : ""}</a>`);
+  }
+
+  function renderMarkdown(text) {
+    const out = [];
+    let list = null;
+    const close = () => {
+      if (list) out.push(`</${list}>`);
+      list = null;
+    };
+    for (const raw of String(text || "").split(/\n/)) {
+      const line = raw.trimEnd();
+      const bullet = line.match(/^\s*[-*•]\s+(.*)/);
+      const numbered = line.match(/^\s*\d+[.)、]\s+(.*)/);
+      if (bullet || numbered) {
+        const kind = bullet ? "ul" : "ol";
+        if (list !== kind) {
+          close();
+          out.push(`<${kind}>`);
+          list = kind;
+        }
+        out.push(`<li>${renderInline((bullet || numbered)[1])}</li>`);
+        continue;
+      }
+      close();
+      if (!line.trim()) continue;
+      const heading = line.match(/^#{1,4}\s+(.*)/);
+      const quote = line.match(/^\s*>\s?(.*)/);
+      if (heading) out.push(`<p><strong>${renderInline(heading[1])}</strong></p>`);
+      else if (quote) out.push(`<blockquote>${renderInline(quote[1])}</blockquote>`);
+      else out.push(`<p>${renderInline(line)}</p>`);
+    }
+    close();
+    return out.join("");
   }
 
   function isDark() {
@@ -108,7 +243,12 @@
     appPath,
     toLogin,
     BASE,
+    withKey,
+    loadAccess,
+    openInvite,
+    access: () => access,
     escapeHtml,
+    renderMarkdown,
     isDark,
     setTheme,
     bindThemeToggle,
@@ -118,4 +258,8 @@
     STATUS_TEXT,
     PIPELINE_TEXT,
   };
+
+  document.addEventListener("click", (event) => {
+    if (event.target.closest("#accessChip")) openInvite();
+  });
 })();

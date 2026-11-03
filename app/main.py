@@ -2,22 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import arxiv, auth, notes
+from . import access, arxiv, assist, auth, digest, export, notes, search, zotero
 from .compile import has_tex
 from .config import settings
 from .fonts import cjk_fonts
 from .jobs import store
-from .magpie import list_models
+from .magpie import MagpieError, list_models
 from .pipeline import runner_for
 
 
@@ -25,7 +26,10 @@ from .pipeline import runner_for
 async def lifespan(_app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store.load()
+    store.on_done = assist.auto_guide
+    scheduler = asyncio.create_task(digest.scheduler())
     yield
+    scheduler.cancel()
 
 
 app = FastAPI(title="鹊桥 Queqiao", lifespan=lifespan)
@@ -58,9 +62,39 @@ def client_key(request: Request) -> str:
     return forwarded or (request.client.host if request.client else "unknown")
 
 
+# (method, path regex, permission). Anything not listed that is not a GET/HEAD needs "write".
+PERMISSIONS: list[tuple[str, re.Pattern, str]] = [
+    ("POST", re.compile(r"^/api/arxiv$"), "translate"),
+    ("POST", re.compile(r"^/api/upload$"), "translate"),
+    ("POST", re.compile(r"^/api/jobs/[0-9a-f]{12}/retry$"), "translate"),
+    ("POST", re.compile(r"^/api/search$"), "ai"),
+    ("POST", re.compile(r"^/api/jobs/[0-9a-f]{12}/ask$"), "ai"),
+    ("POST", re.compile(r"^/api/jobs/[0-9a-f]{12}/(guide|references)$"), "ai"),
+    ("POST", re.compile(r"^/api/digest/run$"), "admin"),
+    ("PUT", re.compile(r"^/api/digest/profile$"), "admin"),
+    ("DELETE", re.compile(r"^/api/digest/profile$"), "admin"),
+    ("DELETE", re.compile(r"^/api/jobs/[0-9a-f]{12}$"), "admin"),
+    ("PUT", re.compile(r"^/api/settings$"), "admin"),
+    ("POST", re.compile(r"^/api/settings/test$"), "admin"),
+    ("POST", re.compile(r"^/api/zotero/test$"), "admin"),
+    ("POST", re.compile(r"^/api/jobs/[0-9a-f]{12}/zotero$"), "admin"),
+    ("GET", re.compile(r"^/api/access/codes$"), "admin"),
+    ("POST", re.compile(r"^/api/access/codes"), "admin"),
+]
+
+
+def permission_for(method: str, path: str) -> str | None:
+    if path in ("/api/access/me",):
+        return None
+    for verb, pattern, permission in PERMISSIONS:
+        if method == verb and pattern.match(path):
+            return permission
+    return None if method in ("GET", "HEAD", "OPTIONS") else "write"
+
+
 @app.middleware("http")
 async def access_guard(request: Request, call_next):
-    """Enforce the gateway secret and, when a password is configured, a login session."""
+    """Enforce the gateway secret, the optional login password and invite-code permissions."""
     secret = settings.gateway_secret
     if secret:
         given = request.headers.get(GATEWAY_SECRET_HEADER, "")
@@ -75,6 +109,15 @@ async def access_guard(request: Request, call_next):
             return RedirectResponse(
                 f"{base_path()}/login?next={quote(target, safe='')}", status_code=303
             )
+    identity = access.identify(request.headers.get(access.HEADER))
+    request.state.identity = identity
+    if path.startswith("/api/"):
+        permission = permission_for(request.method, path)
+        if permission:
+            try:
+                access.require(identity, permission)
+            except access.AccessDenied as exc:
+                return JSONResponse({"detail": exc.message, "code": "invite"}, status_code=exc.status)
     return await call_next(request)
 
 
@@ -118,9 +161,13 @@ class SettingsRequest(BaseModel):
     magpie_base_url: str | None = None
     magpie_api_key: str | None = None
     default_model: str | None = None
+    assist_model: str | None = None
     preferred_models: list[str] | str | None = None
     concurrency: int | None = None
     pdf_qps: int | None = None
+    zotero_user_id: str | None = None
+    zotero_api_key: str | None = None
+    zotero_collection: str | None = None
 
 
 def pick_model(requested: str | None) -> str:
@@ -144,8 +191,12 @@ async def health() -> dict:
         "latex": has_tex(),
         "fonts": cjk_fonts(),
         "default_model": settings.default_model,
+        "assist_model": settings.helper_model,
         "data_dir": str(settings.data_dir),
         "auth": auth.enabled(),
+        "access_mode": "invite" if access.invite_mode() else "open",
+        "zotero": zotero.configured(),
+        "digest_hour": settings.digest_hour,
     }
 
 
@@ -159,7 +210,10 @@ async def models() -> dict:
 
 
 @app.get("/api/settings")
-async def get_settings() -> dict:
+async def get_settings(request: Request) -> dict:
+    identity = request.state.identity
+    if access.invite_mode() and not (identity and identity.admin):
+        return {"settings": {}, "restricted": True}
     return {"settings": settings.public(), "data_dir": str(settings.data_dir), "settings_file": str(settings.settings_file)}
 
 
@@ -203,6 +257,243 @@ async def submit_arxiv(request: ArxivRequest) -> dict:
     job = store.create("arxiv", model, arxiv_id=arxiv_id, title=f"arXiv:{arxiv_id}", meta={"requested_id": arxiv_id})
     store.submit(job, runner_for(job))
     return job.public()
+
+
+@app.get("/api/arxiv/lookup")
+async def lookup_arxiv(id: str) -> dict:
+    """An existing translation of this paper (any model), so visitors can read without submitting."""
+    arxiv_id = arxiv.parse_arxiv_id(id)
+    if not arxiv_id:
+        raise HTTPException(400, "无法识别 arXiv 地址或 ID")
+    wanted = arxiv.base_id(arxiv_id)
+    matches = [
+        job
+        for job in store.list()
+        if job.kind == "arxiv"
+        and wanted in (arxiv.base_id(job.arxiv_id or ""), arxiv.base_id(job.meta.get("requested_id", "")))
+        and job.status != "failed"
+    ]
+    matches.sort(key=lambda job: (job.model != settings.default_model, job.status != "done"))
+    return {"job": matches[0].public() if matches else None}
+
+
+# ---------------------------------------------------------------------------
+# Invite codes
+# ---------------------------------------------------------------------------
+
+
+class CodeRequest(BaseModel):
+    name: str
+    role: str = "member"
+    translate: int | None = None
+    ai: int | None = None
+
+
+@app.get("/api/access/me")
+async def access_me(request: Request) -> dict:
+    return access.describe(request.state.identity)
+
+
+@app.get("/api/access/codes")
+async def access_codes() -> dict:
+    return {"codes": [access.public_entry(entry) for entry in access.load_codes()], "mode": settings.access_mode}
+
+
+@app.post("/api/access/codes")
+async def access_create(request: CodeRequest) -> dict:
+    try:
+        code, entry = access.create_code(request.name, request.role, request.translate, request.ai)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"code": code, "entry": entry}
+
+
+@app.post("/api/access/codes/{code_id}/revoke")
+async def access_revoke(code_id: str, request: Request) -> dict:
+    identity = request.state.identity
+    if identity and identity.id == code_id:
+        raise HTTPException(400, "不能停用当前正在使用的邀请码")
+    if not access.revoke(code_id):
+        raise HTTPException(404, "未找到该邀请码")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy search
+# ---------------------------------------------------------------------------
+
+
+class SearchRequest(BaseModel):
+    q: str
+
+
+@app.post("/api/search")
+async def search_papers(request: SearchRequest) -> dict:
+    try:
+        result = await search.search(request.q)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (arxiv.ArxivError, httpx.HTTPError) as exc:
+        raise HTTPException(502, f"arXiv 检索失败：{exc}") from exc
+    translated = {}
+    for job in store.list():
+        if job.kind == "arxiv" and job.arxiv_id and job.status != "failed":
+            translated.setdefault(arxiv.base_id(job.arxiv_id), job.public())
+    for item in result["results"]:
+        existing = translated.get(arxiv.base_id(item["arxiv_id"]))
+        item["job"] = {"id": existing["id"], "status": existing["status"], "arxiv_id": existing["arxiv_id"], "kind": "arxiv"} if existing else None
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Reading assistant
+# ---------------------------------------------------------------------------
+
+
+class AskRequest(BaseModel):
+    selection: str = ""
+    question: str = ""
+    mode: str = "ask"
+    page: int | None = None
+    side: str = "translated"
+    thread: list[dict] = []
+
+
+class ForceRequest(BaseModel):
+    force: bool = False
+
+
+def job_or_404(job_id: str):
+    job = store.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
+@app.get("/api/jobs/{job_id}/assist")
+async def job_assist(job_id: str) -> dict:
+    job = job_or_404(job_id)
+    return {
+        "guide": assist.read_state(job, "guide"),
+        "references": assist.read_state(job, "references"),
+        "qa": assist.qa_history(job),
+        "model": settings.helper_model,
+    }
+
+
+@app.post("/api/jobs/{job_id}/guide")
+async def job_guide(job_id: str, request: ForceRequest) -> dict:
+    return assist.start(job_or_404(job_id), "guide", request.force)
+
+
+@app.post("/api/jobs/{job_id}/references")
+async def job_references(job_id: str, request: ForceRequest) -> dict:
+    return assist.start(job_or_404(job_id), "references", request.force)
+
+
+@app.post("/api/jobs/{job_id}/ask")
+async def job_ask(job_id: str, body: AskRequest, request: Request) -> dict:
+    job = job_or_404(job_id)
+    identity = request.state.identity
+    try:
+        return await assist.ask(
+            job, body.selection, body.question, body.mode, body.page, body.side, body.thread, identity.name if identity else ""
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except MagpieError as exc:
+        raise HTTPException(502, f"模型调用失败：{exc}") from exc
+
+
+@app.delete("/api/jobs/{job_id}/qa/{item_id}")
+async def job_qa_delete(job_id: str, item_id: str) -> dict:
+    await asyncio.to_thread(assist.delete_qa, job_or_404(job_id), item_id)
+    return {"ok": True}
+
+
+def public_reader_url(request: Request, job) -> str:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host") or request.url.netloc
+    path = f"/arxiv/{job.arxiv_id}?job={job.id}" if job.kind == "arxiv" and job.arxiv_id else f"/job/{job.id}"
+    return f"{proto}://{host}{base_path()}{path}"
+
+
+@app.get("/api/jobs/{job_id}/export.md")
+async def job_export(job_id: str, request: Request) -> PlainTextResponse:
+    job = job_or_404(job_id)
+    text = await asyncio.to_thread(export.markdown, job, public_reader_url(request, job))
+    stem = (job.arxiv_id or job.title or job.id).replace("/", "_")
+    return PlainTextResponse(
+        text,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(stem)}.notes.md", "Cache-Control": "no-store"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zotero
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/zotero/test")
+async def zotero_test() -> dict:
+    try:
+        return await zotero.test()
+    except (zotero.ZoteroError, httpx.HTTPError) as exc:
+        return {"ok": False, "error": str(exc)[:300]}
+
+
+@app.post("/api/jobs/{job_id}/zotero")
+async def job_zotero(job_id: str, request: Request) -> dict:
+    job = job_or_404(job_id)
+    try:
+        return await zotero.sync(job, public_reader_url(request, job))
+    except zotero.ZoteroError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"无法连接 Zotero：{exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Daily digest
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/digest")
+async def digest_index() -> dict:
+    return {"dates": digest.dates(), "status": digest.status(), "profile": digest.profile(), "hour": settings.digest_hour}
+
+
+@app.get("/api/digest/{day}")
+async def digest_day(day: str) -> dict:
+    report = digest.load(day)
+    if not report:
+        raise HTTPException(404, "这一天没有日报")
+    translated = {}
+    for job in store.list():
+        if job.kind == "arxiv" and job.arxiv_id and job.status != "failed":
+            translated.setdefault(arxiv.base_id(job.arxiv_id), {"id": job.id, "status": job.status, "arxiv_id": job.arxiv_id, "kind": "arxiv"})
+    for item in report.get("items", []):
+        item["job"] = translated.get(item["arxiv_id"])
+    return report
+
+
+@app.post("/api/digest/run")
+async def digest_run(request: ForceRequest) -> dict:
+    return digest.start(force=request.force)
+
+
+@app.put("/api/digest/profile")
+async def digest_profile(request: Request) -> dict:
+    try:
+        return digest.save_profile(await request.json())
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/digest/profile")
+async def digest_profile_reset() -> dict:
+    return digest.reset_profile()
 
 
 @app.post("/api/upload")
@@ -369,6 +660,11 @@ async def library_page() -> HTMLResponse:
 
 @app.get("/settings")
 async def settings_page() -> HTMLResponse:
+    return page("index.html")
+
+
+@app.get("/digest")
+async def digest_page() -> HTMLResponse:
     return page("index.html")
 
 

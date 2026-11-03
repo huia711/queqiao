@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -11,6 +13,11 @@ OLD_STYLE_ID = re.compile(r"(?<![A-Za-z])([a-z][a-z\-]+(?:\.[A-Z]{2})?/\d{7})(v\
 ATOM = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 USER_AGENT = "queqiao/0.2 (self-hosted paper translator)"
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024
+API_URL = "https://export.arxiv.org/api/query"
+# arXiv asks API clients to space out requests; all queries share this gate.
+API_INTERVAL = 1.0
+_api_lock = asyncio.Lock()
+_api_last = 0.0
 
 
 class ArxivError(RuntimeError):
@@ -40,18 +47,10 @@ def http_client() -> httpx.AsyncClient:
     )
 
 
-async def fetch_metadata(client: httpx.AsyncClient, arxiv_id: str) -> dict:
-    response = await client.get(
-        "https://export.arxiv.org/api/query", params={"id_list": arxiv_id, "max_results": 1}
-    )
-    response.raise_for_status()
-    root = ET.fromstring(response.content)
-    entry = root.find("a:entry", ATOM)
-    if entry is None:
-        raise ArxivError(f"未找到 arXiv 论文 {arxiv_id}")
+def parse_entry(entry: ET.Element) -> dict | None:
     entry_id = (entry.findtext("a:id", default="", namespaces=ATOM) or "").strip()
     if "/abs/" not in entry_id:
-        raise ArxivError(f"未找到 arXiv 论文 {arxiv_id}")
+        return None
     resolved = entry_id.split("/abs/", 1)[1]
     primary = entry.find("arxiv:primary_category", ATOM)
     return {
@@ -67,6 +66,56 @@ async def fetch_metadata(client: httpx.AsyncClient, arxiv_id: str) -> dict:
         "category": primary.get("term") if primary is not None else "",
         "abs_url": f"https://arxiv.org/abs/{resolved}",
     }
+
+
+async def api_query(client: httpx.AsyncClient, params: dict) -> tuple[list[dict], int]:
+    """Call the arXiv Atom API (rate limited); returns entries and the total hit count."""
+    global _api_last
+    async with _api_lock:
+        wait = API_INTERVAL - (time.monotonic() - _api_last)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            response = await client.get(API_URL, params=params)
+        finally:
+            _api_last = time.monotonic()
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    total_text = root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults") or "0"
+    entries = [item for item in (parse_entry(entry) for entry in root.findall("a:entry", ATOM)) if item]
+    return entries, int(total_text) if total_text.isdigit() else len(entries)
+
+
+async def fetch_metadata(client: httpx.AsyncClient, arxiv_id: str) -> dict:
+    entries, _ = await api_query(client, {"id_list": arxiv_id, "max_results": 1})
+    if not entries:
+        raise ArxivError(f"未找到 arXiv 论文 {arxiv_id}")
+    return entries[0]
+
+
+async def fetch_many(client: httpx.AsyncClient, ids: list[str]) -> dict[str, dict]:
+    """Metadata for many IDs, keyed by the base ID (without version)."""
+    found: dict[str, dict] = {}
+    unique = list(dict.fromkeys(base_id(item) for item in ids if item))
+    for start in range(0, len(unique), 50):
+        chunk = unique[start : start + 50]
+        entries, _ = await api_query(client, {"id_list": ",".join(chunk), "max_results": len(chunk)})
+        for entry in entries:
+            found[base_id(entry["arxiv_id"])] = entry
+    return found
+
+
+async def search(
+    client: httpx.AsyncClient, query: str, max_results: int = 10, sort: str = "relevance", start: int = 0
+) -> tuple[list[dict], int]:
+    params = {
+        "search_query": query,
+        "max_results": max_results,
+        "start": start,
+        "sortBy": sort,
+        "sortOrder": "descending",
+    }
+    return await api_query(client, params)
 
 
 async def download(client: httpx.AsyncClient, url: str, dest: Path) -> str:

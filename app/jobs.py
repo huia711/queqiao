@@ -67,6 +67,8 @@ class JobStore:
         self._lock = threading.Lock()
         self._semaphore: asyncio.Semaphore | None = None
         self._tasks: dict[str, asyncio.Task] = {}
+        # Optional coroutine run after a job finishes successfully (e.g. the reading guide).
+        self.on_done: Callable[[Job], Awaitable[None]] | None = None
 
     def load(self) -> None:
         settings.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -165,6 +167,11 @@ class JobStore:
                 else:
                     if job.status == "running":
                         self.update(job, status="done", stage="完成", progress=100.0, finished_at=time.time())
+                        if self.on_done:
+                            try:
+                                await self.on_done(job)
+                            except Exception:  # noqa: BLE001 - optional follow-up work
+                                pass
                 finally:
                     self._tasks.pop(job.id, None)
 

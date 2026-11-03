@@ -28,11 +28,13 @@
       </a>
       <nav aria-label="主导航">
         <a href="/" data-route="home">翻译</a>
+        <a href="/digest" data-route="digest">每日论文</a>
         <a href="/library" data-route="library">文库</a>
-        <a href="/settings" data-route="settings">设置</a>
+        <a href="/settings" data-route="settings" class="admin-only">设置</a>
         <a href="/about" data-route="about">说明</a>
       </nav>
       <div class="top-actions">
+        <button class="access-chip hidden" id="accessChip" type="button">输入邀请码</button>
         <span class="status-pill" id="gatewayStatus" title="Magpie 网关状态"><span class="dot"></span><span class="label">连接 Magpie…</span></span>
         <button class="icon-btn" id="themeToggle" title="切换深色 / 浅色" aria-label="切换主题">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -45,7 +47,7 @@
     <section class="hero wrap">
       <p class="eyebrow">SELF-HOSTED · PAPER TRANSLATION</p>
       <h1>把论文渡到<em>中文</em>这一岸</h1>
-      <p class="lead">输入 arXiv 编号或上传 PDF。arXiv 论文按 LaTeX 源码翻译后重新排版，公式与引用原样保留；译文与原文并排对照，可高亮、批注，笔记自动保存在本机。</p>
+      <p class="lead">输入 arXiv 编号，或者直接描述你想找的论文。arXiv 论文按 LaTeX 源码翻译后重新排版，公式与引用原样保留；译文与原文并排对照，可以高亮、批注、向 AI 提问。</p>
       <div class="hero-meta" id="heroMeta">
         <span><b id="metaPapers">0</b> 篇论文</span>
         <span class="divider"></span>
@@ -61,8 +63,8 @@
       <div class="composer">
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="arxiv" role="tab" aria-selected="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l12 18M18 3L6 21"/></svg>
-            arXiv 论文
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+            找论文
           </button>
           <button class="tab" data-tab="local" role="tab" aria-selected="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
@@ -71,15 +73,15 @@
         </div>
 
         <div class="panel" id="arxivPanel">
-          <p class="hint">输入 arXiv 地址或编号，示例：
-            <a href="/arxiv/1706.03762">1706.03762</a>
-            <a href="/arxiv/2305.18290">2305.18290</a>
-            <a href="/arxiv/2310.06825">2310.06825</a>
+          <p class="hint">arXiv 链接或编号会直接开始翻译；其他输入（标题、中文描述、参考文献条目、DOI）会用大模型在 arXiv 上搜索。试试：
+            <a href="#" data-example="1706.03762">1706.03762</a>
+            <a href="#" data-example="用视频生成做多模态推理的论文">用视频生成做多模态推理</a>
+            <a href="#" data-example="在真实网站上评测 GUI agent 的 benchmark">真实网站上的 GUI agent benchmark</a>
           </p>
           <form id="arxivForm" autocomplete="off">
             <div class="field-row">
-              <input class="field" id="arxivInput" placeholder="https://arxiv.org/abs/1706.03762 或 1706.03762v7" spellcheck="false" aria-label="arXiv 地址或编号">
-              <button class="btn primary big" type="submit" id="arxivSubmit">翻译</button>
+              <input class="field" id="arxivInput" placeholder="1706.03762、论文标题，或“那篇……的论文”" spellcheck="false" aria-label="arXiv 编号、标题或描述">
+              <button class="btn primary big" type="submit" id="arxivSubmit">搜索</button>
             </div>
             <div class="row">
               <span class="spacer"></span>
@@ -87,6 +89,7 @@
             </div>
           </form>
           <div class="notice hidden" id="arxivNotice"></div>
+          <div class="search-results hidden" id="searchResults" aria-live="polite"></div>
         </div>
 
         <div class="panel hidden" id="localPanel">
@@ -135,6 +138,48 @@
     </section>
   </main>
 
+  <main id="digestView" class="hidden">
+    <section class="hero wrap">
+      <p class="eyebrow">DAILY RADAR</p>
+      <h1>每日论文</h1>
+      <p class="lead">每天按研究画像从 arXiv 拉取新论文，由大模型根据标题和摘要筛选、写中文 TL;DR，已经报道过的论文不会重复出现。看中的论文可以一键全文翻译。</p>
+    </section>
+    <section class="wrap">
+      <div class="toolrow digest-toolrow">
+        <select class="field digest-date" id="digestDate" aria-label="选择日期"></select>
+        <div class="seg-filter" id="digestFilter">
+          <button class="on" data-tier="all">全部</button>
+          <button data-tier="must">优先精读</button>
+          <button data-tier="watch">值得关注</button>
+          <button data-tier="brief">简讯</button>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn small admin-only" id="digestProfileBtn" type="button">研究画像</button>
+        <button class="btn small primary admin-only" id="digestRunBtn" type="button">生成今天的日报</button>
+      </div>
+      <div class="digest-status hidden" id="digestStatus"></div>
+      <div id="digestBody"><div class="empty">读取中…</div></div>
+    </section>
+    <dialog class="model-dialog profile-dialog" id="profileDialog">
+      <form method="dialog">
+        <strong>研究画像</strong>
+        <p>大模型按这里的研究兴趣和筛选标准打分；检索主题是 arXiv 查询语法（<code>abs:"GUI agent" OR …</code>）。默认画像来自你的“每日科研前沿”自动化。</p>
+        <label class="setting"><span class="setting-name">研究兴趣与筛选标准</span><textarea class="field" name="interests" rows="9"></textarea></label>
+        <label class="setting"><span class="setting-name">检索主题（每行：名称 | arXiv 查询）</span><textarea class="field mono" name="topics" rows="8"></textarea></label>
+        <div class="setting-pair">
+          <label class="setting"><span class="setting-name">arXiv 分类（逗号分隔，留空不限）</span><input class="field" name="categories"></label>
+          <label class="setting"><span class="setting-name">回看天数</span><input class="field" name="days" type="number" min="1" max="7"></label>
+        </div>
+        <div class="row">
+          <button class="btn ghost" value="reset">恢复默认</button>
+          <span class="spacer"></span>
+          <button class="btn" value="cancel">取消</button>
+          <button class="btn primary" value="ok">保存</button>
+        </div>
+      </form>
+    </dialog>
+  </main>
+
   <main id="libraryView" class="hidden">
     <section class="hero wrap">
       <p class="eyebrow">LIBRARY</p>
@@ -180,6 +225,11 @@
           <select class="field" name="default_model" id="settingsModel"></select>
           <span class="setting-help">新翻译默认使用的模型；翻译页仍可临时切换。</span>
         </label>
+        <label class="setting">
+          <span class="setting-name">AI 研读模型</span>
+          <select class="field" name="assist_model" id="settingsAssistModel"></select>
+          <span class="setting-help">用于模糊搜索、选中提问、导读、参考文献速览和每日论文；留空则与翻译模型相同。建议选上下文长、速度快的模型。</span>
+        </label>
         <div class="setting-pair">
           <label class="setting">
             <span class="setting-name">源码翻译并发</span>
@@ -195,8 +245,44 @@
           <button class="btn" type="button" id="settingsTest">测试连接</button>
           <span class="setting-status" id="settingsStatus"></span>
         </div>
+
+        <h3 class="setting-group">Zotero</h3>
+        <p class="setting-help">在阅读页点「发送到 Zotero」：已在库中的论文（按 arXiv 编号或标题匹配）会附加一条笔记，没有的会新建条目；笔记包含导读、高亮、批注和 AI 问答，再次发送会更新同一条笔记。密钥在 <a href="https://www.zotero.org/settings/keys" target="_blank" rel="noopener">zotero.org/settings/keys</a> 创建，需要勾选 Allow write access。</p>
+        <div class="setting-pair">
+          <label class="setting">
+            <span class="setting-name">User ID</span>
+            <input class="field" name="zotero_user_id" placeholder="一串数字" spellcheck="false">
+          </label>
+          <label class="setting">
+            <span class="setting-name">API Key</span>
+            <input class="field" name="zotero_api_key" type="password" spellcheck="false">
+          </label>
+        </div>
+        <label class="setting">
+          <span class="setting-name">新条目放入的分类（可选）</span>
+          <input class="field" name="zotero_collection" placeholder="例如：鹊桥；不存在时会自动创建" spellcheck="false">
+        </label>
+        <div class="row">
+          <button class="btn primary" type="submit">保存设置</button>
+          <button class="btn" type="button" id="zoteroTest">测试 Zotero</button>
+          <span class="setting-status" id="zoteroStatus"></span>
+        </div>
       </form>
       <div class="note-block" id="settingsWhere">设置保存在本机。</div>
+
+      <section class="invite-admin hidden" id="inviteAdmin">
+        <h2>邀请码</h2>
+        <p>公网部署时，访客只能阅读已有论文；提交翻译、使用 AI 研读、做笔记都需要邀请码。成员可以设置每天的额度（0 表示不限），管理员还可以改设置、删除论文。邀请码只在创建时显示一次。</p>
+        <form class="invite-form" id="inviteForm" autocomplete="off">
+          <input class="field" name="name" placeholder="给谁用，例如：张三" required>
+          <select class="field" name="role"><option value="member">成员</option><option value="admin">管理员</option></select>
+          <label>每天翻译 <input class="field" name="translate" type="number" min="0" value="10"></label>
+          <label>每天 AI <input class="field" name="ai" type="number" min="0" value="200"></label>
+          <button class="btn primary" type="submit">生成</button>
+        </form>
+        <div class="notice hidden" id="inviteNew"></div>
+        <table class="kv-table invite-table" id="inviteTable"></table>
+      </section>
     </section>
   </main>
 
@@ -220,6 +306,17 @@
 
       <h2>阅读器</h2>
       <p>原文 / 译文 / 分屏对照、交换左右、双向同步滚动、论文信息、笔记列表、夜间阅读、深色主题；快捷键 <code>1</code> <code>2</code> <code>3</code> 切换视图，<code>⌘S</code> 立即保存笔记。</p>
+
+      <h2>AI 研读</h2>
+      <table class="kv-table">
+        <tr><td>模糊搜索</td><td>输入标题、中文描述、参考文献条目或 DOI。大模型只负责改写检索词和给候选排序，候选论文全部来自 arXiv API，不会编造不存在的论文。</td></tr>
+        <tr><td>选中提问</td><td>在译文或原文中选中一段话，点「解释 / 说人话 / 审稿视角 / 追问」。回答基于全文，并标注页码，点页码即可跳转。</td></tr>
+        <tr><td>导读</td><td>翻译完成后自动生成：一句话总结、问题、贡献、方法、实验设置、关键结果、局限，以及值得看的图表和所在页码。</td></tr>
+        <tr><td>参考文献</td><td>列出参考文献，注明每篇在本文中的作用（基线、评测、动机……）；能在 arXiv 上找到的再给出 TL;DR 和核心动机，并可以一键翻译。</td></tr>
+        <tr><td>每日论文</td><td>按研究画像从 arXiv 拉取新论文并筛选，分为「优先精读 / 值得关注 / 简讯」。所有判断只基于标题和摘要，是初筛而非结论。</td></tr>
+        <tr><td>导出</td><td>「更多 → 导出 Markdown」或「发送到 Zotero」，内容包括导读、高亮与批注、AI 问答。</td></tr>
+      </table>
+      <div class="note-block">AI 的回答都可能出错，尤其是数字和结论；重要内容请对照原文核实。问答、导读和参考文献速览保存在 <code>data/jobs/&lt;任务&gt;/assist/</code>。</div>
 
       <h2>当前配置</h2>
       <table class="kv-table" id="configTable"><tr><td>读取中…</td><td></td></tr></table>
