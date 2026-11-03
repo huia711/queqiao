@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,36 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="鹊桥 Queqiao", lifespan=lifespan)
+
+GATEWAY_SECRET_HEADER = "x-hub-node-secret"
+
+
+def base_path() -> str:
+    """Normalized URL prefix for deployments behind a path-based reverse proxy."""
+    value = (settings.base_path or "").strip().strip("/")
+    return f"/{value}" if value else ""
+
+
+@app.middleware("http")
+async def gateway_guard(request: Request, call_next):
+    """When a gateway secret is configured, only accept requests that came through the gateway."""
+    secret = settings.gateway_secret
+    if secret:
+        given = request.headers.get(GATEWAY_SECRET_HEADER, "")
+        if not hmac.compare_digest(given, secret):
+            return JSONResponse({"detail": "forbidden"}, status_code=403)
+    return await call_next(request)
+
+
+def page(name: str) -> HTMLResponse:
+    """Serve an HTML page; under a prefix, root-relative URLs are rewritten to include it."""
+    html = (web_dir / name).read_text("utf-8")
+    prefix = base_path()
+    if prefix:
+        for attribute in ('href="/', 'src="/', 'action="/'):
+            html = html.replace(attribute, attribute[:-1] + prefix + "/")
+        html = html.replace("<head>", f'<head>\n  <script>window.QQ_BASE = "{prefix}";</script>', 1)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 class ArxivRequest(BaseModel):
@@ -268,43 +299,43 @@ web_dir = settings.web_dir
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index() -> FileResponse:
-    return FileResponse(web_dir / "index.html")
+async def index() -> HTMLResponse:
+    return page("index.html")
 
 
 @app.get("/arxiv/{arxiv_path:path}")
-async def arxiv_page(arxiv_path: str) -> FileResponse:
-    return FileResponse(web_dir / "reader.html")
+async def arxiv_page(arxiv_path: str) -> HTMLResponse:
+    return page("reader.html")
 
 
 @app.get("/job/{job_id}")
-async def job_page(job_id: str) -> FileResponse:
-    return FileResponse(web_dir / "reader.html")
+async def job_page(job_id: str) -> HTMLResponse:
+    return page("reader.html")
 
 
 @app.get("/library")
-async def library_page() -> FileResponse:
-    return FileResponse(web_dir / "index.html")
+async def library_page() -> HTMLResponse:
+    return page("index.html")
 
 
 @app.get("/settings")
-async def settings_page() -> FileResponse:
-    return FileResponse(web_dir / "index.html")
+async def settings_page() -> HTMLResponse:
+    return page("index.html")
 
 
 @app.get("/history")
 async def history_page() -> RedirectResponse:
-    return RedirectResponse("/library")
+    return RedirectResponse(f"{base_path()}/library")
 
 
 @app.get("/about")
-async def about_page() -> FileResponse:
-    return FileResponse(web_dir / "index.html")
+async def about_page() -> HTMLResponse:
+    return page("index.html")
 
 
 @app.get("/abs/{arxiv_path:path}")
 async def abs_redirect(arxiv_path: str) -> RedirectResponse:
-    return RedirectResponse(f"/arxiv/{arxiv_path}")
+    return RedirectResponse(f"{base_path()}/arxiv/{arxiv_path}")
 
 
 @app.exception_handler(HTTPException)

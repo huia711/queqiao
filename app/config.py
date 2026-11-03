@@ -38,6 +38,10 @@ FIELDS: dict[str, tuple[str, object, type]] = {
     "cjk_serif_font": ("QUEQIAO_CJK_SERIF_FONT", "", str),
     "cjk_sans_font": ("QUEQIAO_CJK_SANS_FONT", "", str),
     "cjk_kai_font": ("QUEQIAO_CJK_KAI_FONT", "", str),
+    # Path prefix when served behind a reverse proxy (e.g. "/queqiao").
+    "base_path": ("QUEQIAO_BASE_PATH", "", str),
+    # Shared secret a fronting gateway must send in X-Hub-Node-Secret; empty disables the check.
+    "gateway_secret": ("QUEQIAO_GATEWAY_SECRET", "", str),
 }
 
 # Settings the in-app settings page may change.

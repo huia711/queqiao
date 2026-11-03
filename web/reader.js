@@ -1,8 +1,8 @@
 (function () {
   "use strict";
 
-  const { api, escapeHtml, isDark, setTheme, readerUrl, STATUS_TEXT, PIPELINE_TEXT } = window.QQ;
-  const VIEWER = "/static/vendor/pdfjs/web/viewer.html";
+  const { api, url, appPath, escapeHtml, isDark, setTheme, readerUrl, STATUS_TEXT, PIPELINE_TEXT } = window.QQ;
+  const VIEWER = url("/static/vendor/pdfjs/web/viewer.html");
   const PAGE_COLOR_KEY = "qq-page-color";
   const MODEL_KEY = "qq-model";
   const KINDS = ["translated", "original"];
@@ -36,7 +36,8 @@
 
   async function resolveJob() {
     const params = new URLSearchParams(location.search);
-    const jobMatch = location.pathname.match(/^\/job\/([0-9a-f]{12})/);
+    const path = appPath(location.pathname);
+    const jobMatch = path.match(/^\/job\/([0-9a-f]{12})/);
     if (jobMatch) return api(`/api/jobs/${jobMatch[1]}`);
     if (params.get("job")) {
       try {
@@ -45,7 +46,7 @@
         /* fall through and submit a fresh job */
       }
     }
-    const arxivId = decodeURIComponent(location.pathname.replace(/^\/arxiv\//, "")).replace(/\/+$/, "");
+    const arxivId = decodeURIComponent(path.replace(/^\/arxiv\//, "")).replace(/\/+$/, "");
     const created = await api("/api/arxiv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -239,7 +240,7 @@
       const hashAtSave = storageHash(app);
       try {
         const data = await app.pdfDocument.saveDocument();
-        const response = await fetch(`/api/jobs/${job.id}/notes/${kind}`, {
+        const response = await fetch(url(`/api/jobs/${job.id}/notes/${kind}`), {
           method: "PUT",
           headers: { "Content-Type": "application/pdf" },
           body: data,
@@ -774,7 +775,7 @@
       job = await resolveJob();
     } catch (error) {
       states.translated.classList.remove("hidden");
-      states.translated.innerHTML = `<div class="state-card"><p class="eyebrow">ERROR</p><h3>无法打开</h3><p class="error">${escapeHtml(error.message)}</p><div class="row"><a class="btn" href="/">返回首页</a></div></div>`;
+      states.translated.innerHTML = `<div class="state-card"><p class="eyebrow">ERROR</p><h3>无法打开</h3><p class="error">${escapeHtml(error.message)}</p><div class="row"><a class="btn" href="${url("/")}">返回首页</a></div></div>`;
       frames.translated.classList.add("hidden");
       frames.original.classList.add("hidden");
       states.original.classList.add("hidden");

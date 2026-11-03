@@ -51,7 +51,9 @@ class Job:
 
     def public(self) -> dict:
         data = asdict(self)
-        data["artifact_urls"] = {name: f"/api/jobs/{self.id}/files/{name}" for name in self.artifacts}
+        prefix = (settings.base_path or "").strip().strip("/")
+        root = f"/{prefix}" if prefix else ""
+        data["artifact_urls"] = {name: f"{root}/api/jobs/{self.id}/files/{name}" for name in self.artifacts}
         notes_root = self.directory / "notes"
         data["notes"] = {
             target: (notes_root / f"{target}.annotated.pdf").is_file() for target in ("translated", "original")

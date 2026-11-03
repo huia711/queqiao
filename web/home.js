@@ -22,7 +22,7 @@
   // ---------------------------------------------------------------------------
 
   function route() {
-    const path = location.pathname.replace(/\/+$/, "") || "/";
+    const path = window.QQ.appPath(location.pathname).replace(/\/+$/, "") || "/";
     const routes = { "/library": "library", "/history": "library", "/settings": "settings", "/about": "about" };
     const name = routes[path] || "home";
     for (const [key, view] of Object.entries(views)) view.classList.toggle("hidden", key !== name);

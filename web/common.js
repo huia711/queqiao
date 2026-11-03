@@ -3,9 +3,22 @@
 
   const STATUS_TEXT = { queued: "排队中", running: "翻译中", done: "已完成", failed: "失败" };
   const PIPELINE_TEXT = { latex: "源码翻译", babeldoc: "PDF 版式翻译" };
+  // Set by the server when Queqiao is served under a path prefix such as "/queqiao".
+  const BASE = (window.QQ_BASE || "").replace(/\/+$/, "");
+
+  function url(path) {
+    if (!path || !path.startsWith("/") || path.startsWith("//")) return path;
+    if (BASE && (path === BASE || path.startsWith(BASE + "/"))) return path;
+    return BASE + path;
+  }
+
+  function appPath(pathname) {
+    if (BASE && (pathname === BASE || pathname.startsWith(BASE + "/"))) return pathname.slice(BASE.length) || "/";
+    return pathname;
+  }
 
   async function api(path, options) {
-    const response = await fetch(path, options);
+    const response = await fetch(url(path), options);
     let data = null;
     try {
       data = await response.json();
@@ -52,9 +65,9 @@
 
   function readerUrl(job) {
     if (job.kind === "arxiv" && job.arxiv_id) {
-      return `/arxiv/${job.arxiv_id}?job=${job.id}`;
+      return url(`/arxiv/${job.arxiv_id}?job=${job.id}`);
     }
-    return `/job/${job.id}`;
+    return url(`/job/${job.id}`);
   }
 
   async function loadGatewayStatus(pill) {
@@ -82,6 +95,9 @@
 
   window.QQ = {
     api,
+    url,
+    appPath,
+    BASE,
     escapeHtml,
     isDark,
     setTheme,
