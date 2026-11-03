@@ -5,3 +5,5 @@ python-multipart>=0.0.9
 babeldoc>=0.6.4
 # babeldoc imports bitstring.BitStream, which was removed in bitstring 5.
 bitstring>=4.3,<5
+# PyMuPDF 2.x only ships Apple-silicon wheels for macOS; Intel Macs use the last 1.x line.
+pymupdf>=1.26.7,<2; sys_platform == "darwin" and platform_machine == "x86_64"
