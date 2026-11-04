@@ -670,6 +670,10 @@
           ${code.disabled ? "" : `<button class="btn small ghost danger" type="button" data-revoke="${escapeHtml(code.id)}">停用</button>`}</td></tr>`;
       });
       document.getElementById("inviteTable").innerHTML = rows.join("") || `<tr><td>还没有邀请码</td><td></td></tr>`;
+      if (location.hash === "#invites" && !section.classList.contains("hidden")) {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+        section.querySelector("[name=name]").focus({ preventScroll: true });
+      }
     } catch (error) {
       section.classList.add("hidden");
     }

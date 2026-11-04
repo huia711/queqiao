@@ -82,6 +82,16 @@
       <p class="invite-reason">翻译和 AI 研读会消耗模型额度，只对持有邀请码的人开放。没有邀请码也可以自由阅读文库里已有的论文。</p>
       <input class="field" name="code" placeholder="qq-…" autocomplete="off" spellcheck="false">
       <p class="invite-state"></p>
+      <div class="invite-make hidden">
+        <strong>给别人生成邀请码</strong>
+        <p>生成的是成员邀请码：每天最多翻译 10 篇、使用 AI 研读 200 次。邀请码只显示这一次，可以随时停用。</p>
+        <div class="invite-make-row">
+          <input class="field" name="who" placeholder="给谁用，例如：张三" autocomplete="off">
+          <button class="btn primary" type="button" data-role="make">生成</button>
+        </div>
+        <div class="invite-made"></div>
+        <a class="invite-manage" data-role="manage">管理全部邀请码（额度、停用、管理员）→</a>
+      </div>
       <div class="row">
         <button class="btn ghost danger" value="logout" type="submit" data-role="logout">退出</button>
         <span class="spacer"></span>
@@ -90,6 +100,35 @@
       </div>
     </form>`;
     document.body.appendChild(dialog);
+    dialog.querySelector("[data-role=manage]").href = url("/settings#invites");
+    dialog.querySelector("[data-role=make]").addEventListener("click", async () => {
+      const who = dialog.querySelector("[name=who]");
+      const box = dialog.querySelector(".invite-made");
+      if (!who.value.trim()) {
+        who.focus();
+        return;
+      }
+      try {
+        const result = await api("/api/access/codes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: who.value.trim(), role: "member" }),
+        });
+        const link = `${location.origin}${url("/")}#invite=${encodeURIComponent(result.code)}`;
+        box.innerHTML = `<div>邀请码（${escapeHtml(result.entry.name)}）：<code>${escapeHtml(result.code)}</code></div>
+          <div class="invite-made-actions"><button class="btn small" type="button" data-copy-text="${escapeHtml(result.code)}">复制邀请码</button>
+          <button class="btn small" type="button" data-copy-text="${escapeHtml(link)}">复制一键登录链接</button></div>`;
+        who.value = "";
+      } catch (error) {
+        box.textContent = error.message;
+      }
+    });
+    dialog.addEventListener("click", async (event) => {
+      const copy = event.target.closest("[data-copy-text]");
+      if (!copy) return;
+      await navigator.clipboard.writeText(copy.dataset.copyText).catch(() => {});
+      copy.textContent = "已复制";
+    });
     dialog.addEventListener("close", async () => {
       const value = dialog.querySelector("[name=code]").value.trim();
       if (dialog.returnValue === "logout") {
@@ -116,6 +155,11 @@
     dialog.querySelector(".invite-state").textContent = message || (access && access.can_write ? `当前：${access.name}` : "");
     dialog.querySelector("[name=code]").value = "";
     dialog.querySelector("[data-role=logout]").classList.toggle("hidden", !inviteKey());
+    const admin = Boolean(access && access.can_write && access.role === "admin");
+    dialog.querySelector(".invite-make").classList.toggle("hidden", !admin);
+    dialog.querySelector(".invite-made").innerHTML = "";
+    dialog.querySelector(".invite-reason").classList.toggle("hidden", admin);
+    dialog.querySelector("[name=code]").classList.toggle("hidden", admin);
     return new Promise((resolve) => {
       dialog._resolve = resolve;
       if (!dialog.open) dialog.showModal();

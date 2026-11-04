@@ -1645,3 +1645,52 @@ textarea.field.mono {
     text-overflow: ellipsis;
   }
 }
+
+.invite-make {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.invite-make strong {
+  font: 700 14px var(--serif);
+}
+
+.invite-make-row {
+  display: flex;
+  gap: 8px;
+}
+
+.invite-make-row .field {
+  min-height: 38px;
+  font-family: var(--sans);
+  font-size: 14px;
+}
+
+.invite-made {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.8;
+  word-break: break-all;
+}
+
+.invite-made code {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--soft);
+  font: 12.5px var(--mono);
+  user-select: all;
+}
+
+.invite-made-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.invite-manage {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
