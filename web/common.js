@@ -4,6 +4,19 @@
   const STATUS_TEXT = { queued: "排队中", running: "翻译中", done: "已完成", failed: "失败" };
   const PIPELINE_TEXT = { latex: "源码翻译", babeldoc: "PDF 版式翻译" };
   const KEY_STORAGE = "qq-invite";
+
+  // One-time setup link: …/queqiao/#invite=<code> stores the code in this browser and removes it from
+  // the address bar. A URL fragment is never sent to the server, proxies or logs.
+  (function adoptInviteFromLink() {
+    const match = location.hash.match(/(?:^#|&)invite=([^&]+)/);
+    if (!match) return;
+    try {
+      localStorage.setItem(KEY_STORAGE, decodeURIComponent(match[1]).trim());
+    } catch (error) {
+      /* storage unavailable */
+    }
+    history.replaceState(null, "", location.pathname + location.search);
+  })();
   // Set by the server when Queqiao is served under a path prefix such as "/queqiao".
   const BASE = (window.QQ_BASE || "").replace(/\/+$/, "");
 
