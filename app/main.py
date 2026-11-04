@@ -143,12 +143,31 @@ class StripBasePath:
 def page(name: str) -> HTMLResponse:
     """Serve an HTML page; under a prefix, root-relative URLs are rewritten to include it."""
     html = (web_dir / name).read_text("utf-8")
+    # Version our own scripts and styles so browsers and CDNs pick up new releases immediately.
+    html = re.sub(r'(/static/(?!vendor/)[\w.-]+\.(?:js|css))"', rf'\1?v={asset_version()}"', html)
     prefix = base_path()
     if prefix:
         for attribute in ('href="/', 'src="/', 'action="/'):
             html = html.replace(attribute, attribute[:-1] + prefix + "/")
         html = html.replace("<head>", f'<head>\n  <script>window.QQ_BASE = "{prefix}";</script>', 1)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+_asset_version: str | None = None
+
+
+def asset_version() -> str:
+    """Short hash of the web assets, computed once per process."""
+    global _asset_version
+    if _asset_version is None:
+        import hashlib
+
+        digest = hashlib.sha1()
+        for path in sorted(web_dir.glob("*.*")):
+            if path.suffix in (".js", ".css"):
+                digest.update(path.read_bytes())
+        _asset_version = digest.hexdigest()[:10]
+    return _asset_version
 
 
 class ArxivRequest(BaseModel):
