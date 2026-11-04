@@ -67,7 +67,9 @@
     if (!chip || !access) return;
     chip.classList.toggle("hidden", access.mode !== "invite");
     chip.textContent = access.can_write ? `${access.name}` : "输入邀请码";
-    chip.title = access.can_write ? `已用邀请码登录（${access.role === "admin" ? "管理员" : "成员"}），点击管理` : "访客只能阅读已有的翻译；输入邀请码后可以提交翻译、使用 AI 研读";
+    chip.title = access.local
+      ? "本机直连，自动是管理员，不需要邀请码；点击可以给别人生成邀请码"
+      : access.can_write ? `已用邀请码登录（${access.role === "admin" ? "管理员" : "成员"}），点击管理` : "访客只能阅读已有的翻译；输入邀请码后可以提交翻译、使用 AI 研读";
     chip.classList.toggle("on", Boolean(access.can_write));
   }
 

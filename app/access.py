@@ -197,6 +197,8 @@ def describe(identity: Identity | None) -> dict:
         return {"mode": "open", "role": "admin", "name": "本机", "can_write": True}
     if identity is None:
         return {"mode": "invite", "role": "guest", "name": "访客", "can_write": False}
+    if identity is OPEN_IDENTITY:
+        return {"mode": "invite", "role": "admin", "name": "本机", "can_write": True, "local": True}
     used = usage_today().get(identity.id, {})
     return {
         "mode": "invite",

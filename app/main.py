@@ -92,9 +92,29 @@ def permission_for(method: str, path: str) -> str | None:
     return None if method in ("GET", "HEAD", "OPTIONS") else "write"
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "::1"}
+PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-prefix", "x-real-ip", "cf-connecting-ip", "forwarded")
+
+
+def is_local_request(request: Request) -> bool:
+    """A browser on this machine talking to the loopback TCP port directly (not via the gateway).
+
+    The gateway always adds its secret header, and the tunnel from the gateway arrives on the
+    Unix socket (no client address), so neither can pass this check.
+    """
+    client = request.client.host if request.client else ""
+    if client not in LOOPBACK_HOSTS:
+        return False
+    names = (GATEWAY_SECRET_HEADER, *PROXY_HEADERS)
+    return not any(name in request.headers for name in names)
+
+
 @app.middleware("http")
 async def access_guard(request: Request, call_next):
     """Enforce the gateway secret, the optional login password and invite-code permissions."""
+    if is_local_request(request):
+        request.state.identity = access.OPEN_IDENTITY
+        return await call_next(request)
     secret = settings.gateway_secret
     if secret:
         given = request.headers.get(GATEWAY_SECRET_HEADER, "")
