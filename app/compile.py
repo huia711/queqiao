@@ -22,7 +22,23 @@ PDFTEX_ONLY = re.compile(
 )
 PDFTEX_PACKAGES = {"inputenc", "fontenc", "pdfx", "cmap", "mmap", "glyphtounicode", "pdfcomment", "epstopdf", "CJK", "CJKutf8"}
 USEPACKAGE = re.compile(r"\\usepackage\s*(\[[^\]]*\])?\s*\{([^}]*)\}")
+CJK_BEGIN = re.compile(r"\\begin\s*\{CJK\*?\}\s*\{[^}]*\}\s*\{[^}]*\}")
+CJK_END = re.compile(r"\\end\s*\{CJK\*?\}")
 CTEX_CLASSES = {"ctexart", "ctexrep", "ctexbook", "ctexbeamer"}
+# soul's \hl/\ul/\st cannot hyphenate CJK text ("Reconstruction failed"); xeCJKfntef draws the same
+# effects and handles Chinese. Homebrew TeX Live has no font map for FontAwesome, so name the .otf.
+XELATEX_COMPAT = r"""\usepackage{xeCJKfntef}
+\makeatletter
+\def\queqiao@hlcolor{yellow}
+\def\queqiao@soul{%
+  \def\sethlcolor##1{\def\queqiao@hlcolor{##1}}%
+  \DeclareRobustCommand\hl[1]{\CJKunderline[thickness=1.05em,depth=-0.8em,format=\color{\queqiao@hlcolor},skip=false]{##1}}%
+  \DeclareRobustCommand\ul[1]{\CJKunderline{##1}}%
+  \DeclareRobustCommand\st[1]{\CJKsout{##1}}%
+}
+\@ifpackageloaded{soul}{\RequirePackage{xcolor}\AtBeginDocument{\queqiao@soul}}{}
+\@ifpackageloaded{fontawesome}{\renewfontfamily{\FA}{FontAwesome}[Extension=.otf]}{}
+\makeatother"""
 FILE_LINE_ERROR = re.compile(r"^(.+?\.tex):(\d+): (.*)$")
 FATAL_HINTS = ("Emergency stop", "Fatal error", "==> Fatal", "job aborted")
 AUX_SUFFIXES = {".aux", ".fdb_latexmk", ".fls", ".out", ".toc", ".xdv", ".pdf", ".log", ".run.xml", ".bcf", ".lof", ".lot", ".nav", ".snm", ".vrb"}
@@ -50,6 +66,7 @@ def cjk_preamble(engine: str) -> str:
             lines.append(rf"\setCJKsansfont{{{fonts['sans'] or serif}}}[AutoFakeBold=2.5]")
             lines.append(rf"\setCJKmonofont{{{fonts['sans'] or serif}}}")
         lines.append(r"\xeCJKsetup{CJKspace=true}")
+        lines.append(XELATEX_COMPAT)
     else:
         lines.append(r"\usepackage{luatexja-fontspec}")
         if serif:
@@ -75,8 +92,8 @@ def adapt_preamble(preamble: str) -> str:
         return f"\\usepackage{options}{{{','.join(kept)}}}"
 
     preamble = USEPACKAGE.sub(rewrite, preamble)
-    preamble = re.sub(r"\\begin\s*\{CJK\*?\}\s*\{[^}]*\}\s*\{[^}]*\}", "", preamble)
-    return preamble
+    preamble = CJK_BEGIN.sub("", preamble)
+    return CJK_END.sub("", preamble)
 
 
 def inject_cjk(main: Path, engine: str) -> None:
@@ -92,8 +109,7 @@ def inject_cjk(main: Path, engine: str) -> None:
     head = text[: begin.start()]
     tail = text[begin.start() :]
     head = adapt_preamble(head)
-    tail = re.sub(r"\\begin\s*\{CJK\*?\}\s*\{[^}]*\}\s*\{[^}]*\}", "", tail)
-    tail = re.sub(r"\\end\s*\{CJK\*?\}", "", tail)
+    tail = CJK_END.sub("", CJK_BEGIN.sub("", tail))
     if class_name not in CTEX_CLASSES:
         head = head.rstrip() + "\n" + cjk_preamble(engine)
     main.write_text(head + tail, "utf-8")
