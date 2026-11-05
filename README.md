@@ -65,6 +65,7 @@ ARCH=x86_64 macos/build.sh      # Intel 版
 | 每日论文 | `/digest`：按研究画像从 arXiv 拉取最近几天的新论文，由大模型分为「优先精读 / 值得关注 / 简讯」，写 TL;DR、意义与待核实点，跨日去重。可设定每天自动生成。 |
 | 导出与 Zotero | 「更多 → 导出 Markdown」包含导读、笔记和问答；「发送到 Zotero」按 arXiv 编号或标题匹配已有条目，附上（或更新）一条笔记和阅读链接，库里没有时新建条目。 |
 | 邀请码 | 公网部署时，访客只能阅读已有译文；翻译、AI 研读、做笔记需要邀请码，成员可设每天额度，管理员才能改设置、删论文。 |
+| 一键翻译 | 「说明」页里的书签小工具（Safari / Chrome / Edge）：在 arXiv、alphaXiv、Hugging Face Papers 页面点一下就在鹊桥打开译文，没有编号时按页面标题搜索；也可以把地址里的 `arxiv.org` 换成鹊桥地址。`browser-extension/` 是 Chrome 扩展，会在 arXiv 摘要页加「鹊桥翻译」按钮，并提供工具栏按钮和右键菜单。 |
 | 文库 | `/library` 按状态、来源、是否有笔记筛选，支持搜索标题、编号、作者、模型。 |
 | 模型 | 列表来自 Magpie `/v1/models`，默认 `workbuddy/glm-5.3-flashx`；可在阅读页用其他模型重新翻译。 |
 

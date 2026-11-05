@@ -32,8 +32,42 @@
     if (name === "about") loadConfig();
     if (name === "settings") loadSettings();
     if (name === "digest") loadDigest();
-    window.scrollTo(0, 0);
+    const anchor = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+    if (anchor && !views[name].classList.contains("hidden") && views[name].contains(anchor)) anchor.scrollIntoView();
+    else window.scrollTo(0, 0);
     return name;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bookmarklet: open the current page's arXiv paper in Queqiao (or search by page title)
+  // ---------------------------------------------------------------------------
+
+  function bookmarkletSource(base) {
+    const code = `(()=>{const B=${JSON.stringify(base)};let m=document.querySelector('meta[name="citation_arxiv_id"]'),id=m&&m.content.trim(),u=location.href;if(!id){let r=u.match(/\\d{4}\\.\\d{4,5}(v\\d+)?/);if(!r&&/arxiv/i.test(location.hostname))r=u.match(/[a-z-]+(\\.[A-Z]{2})?\\/\\d{7}(v\\d+)?/);id=r&&r[0]}window.open(id?B+"/arxiv/"+id:B+"/?q="+encodeURIComponent(document.title.replace(/\\s*[|\\-–—]\\s*(OpenReview|arXiv|alphaXiv)\\s*$/i,"")),"_blank")})()`;
+    return "javascript:" + encodeURIComponent(code);
+  }
+
+  function setupBookmarklet() {
+    const base = location.origin + window.QQ.url("").replace(/\/+$/, "");
+    const link = document.getElementById("bookmarkletLink");
+    link.setAttribute("href", bookmarkletSource(base));
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      alert("请把这个按钮拖到浏览器的书签栏，再到论文页面上点击这个书签。");
+    });
+    document.getElementById("bookmarkletBase").textContent = base + "/arxiv/<编号>";
+    document.getElementById("bookmarkletExample").textContent = `${base}/abs/2310.06825`;
+  }
+
+  // …/?q=<标题或描述> (used by the bookmarklet and browser extension) runs a search on load.
+  function runQueryFromUrl() {
+    const params = new URLSearchParams(location.search);
+    const query = (params.get("q") || "").trim();
+    if (!query || route() !== "home") return;
+    history.replaceState(null, "", location.pathname + location.hash);
+    const input = document.getElementById("arxivInput");
+    input.value = query.slice(0, 600);
+    document.getElementById("arxivForm").requestSubmit();
   }
 
   document.addEventListener("click", (event) => {
@@ -781,8 +815,10 @@
   window.QQ.bindThemeToggle(document.getElementById("themeToggle"));
   window.QQ.loadGatewayStatus(document.getElementById("gatewayStatus"));
   window.addEventListener("qq-access", () => route());
+  setupBookmarklet();
   window.QQ.loadAccess().then(() => {
     loadModels();
     refreshJobs();
+    runQueryFromUrl();
   });
 })();

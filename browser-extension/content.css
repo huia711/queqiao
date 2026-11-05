@@ -1,0 +1,34 @@
+.queqiao-button.abs-button {
+  display: inline-block;
+  margin: 2px 0 4px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: #8b2e3c !important;
+  border-color: #8b2e3c !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+
+.queqiao-button.abs-button:hover {
+  background: #74222f !important;
+  text-decoration: none !important;
+}
+
+.queqiao-button.floating {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483000;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: #8b2e3c;
+  color: #fff;
+  font: 600 14px/1.2 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  text-decoration: none;
+  box-shadow: 0 8px 24px rgb(40 25 15 / 0.25);
+}
+
+.queqiao-button.floating:hover {
+  background: #74222f;
+  color: #fff;
+}

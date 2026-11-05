@@ -293,6 +293,17 @@
       <p class="lead">一座搭在英文论文与中文读者之间的桥。所有大模型请求都经由本机的 Magpie 网关，没有账号、余额或充值；文件、译文和笔记只保存在本机。</p>
     </section>
     <section class="wrap prose">
+      <h2 id="bookmarklet">浏览器一键翻译</h2>
+      <p>在 arXiv、alphaXiv、Hugging Face Papers 等页面上一键打开鹊桥：已经翻译过的论文直接打开译文，没有的自动开始翻译。当前页面里找不到 arXiv 编号时（例如 OpenReview、会议论文页），会用页面标题在鹊桥里搜索。</p>
+      <div class="bookmarklet-box">
+        <a class="bookmarklet" id="bookmarkletLink" href="#" title="把我拖到书签栏">鹊桥翻译</a>
+        <div>
+          <p><b>书签小工具</b>（Safari、Chrome、Edge 都可以）：把左边的按钮<b>拖到浏览器的书签栏</b>。之后在任意论文页面点一下这个书签即可。</p>
+          <p class="bookmarklet-target">会打开：<code id="bookmarkletBase"></code></p>
+        </div>
+      </div>
+      <p>也可以手动改地址：把 <code>arxiv.org/abs/2310.06825</code> 里的 <code>arxiv.org</code> 换成鹊桥的地址，例如 <code id="bookmarkletExample"></code>。Chrome 用户还可以装仓库里的 <code>browser-extension/</code> 扩展，在 arXiv 页面上直接显示「鹊桥翻译」按钮。</p>
+
       <h2>两条翻译管线</h2>
       <table class="kv-table">
         <tr><td>arXiv 源码翻译</td><td>下载 LaTeX 源码，只翻译正文；公式、引用、标签、表格、代码全部屏蔽。逐段校验后用 XeLaTeX 重新编译；若某段译文导致编译错误，自动恢复该段英文后重编。</td></tr>

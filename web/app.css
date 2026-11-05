@@ -1694,3 +1694,46 @@ textarea.field.mono {
   font-size: 12.5px;
   cursor: pointer;
 }
+
+/* ---------- bookmarklet ---------- */
+
+.bookmarklet-box {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 14px 0;
+  padding: 16px 18px;
+  border: 1px dashed var(--accent-line);
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+
+.bookmarklet-box p {
+  margin: 0 0 4px;
+}
+
+.bookmarklet {
+  flex: none;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: grab;
+  box-shadow: var(--shadow);
+}
+
+.bookmarklet:hover {
+  color: #fff;
+  text-decoration: none;
+  filter: brightness(1.08);
+}
+
+:root[data-theme="dark"] .bookmarklet,
+:root[data-theme="dark"] .bookmarklet:hover {
+  color: #2b1a1d;
+}
+
+.bookmarklet-target code {
+  word-break: break-all;
+}
