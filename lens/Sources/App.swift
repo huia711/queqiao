@@ -45,9 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func rebuildStatusMenu() {
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(withTitle: "框选翻译（⌥⇧\(LensSettings.captureKey)）", action: #selector(startSelection), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "划词翻译（⌥⇧\(LensSettings.selectionKey)）", action: #selector(translateSelectedText), keyEquivalent: "").target = self
-        let recapItem = menu.addItem(withTitle: "重截上次区域（⌥⇧\(LensSettings.recaptureKey)）", action: #selector(recaptureLastArea), keyEquivalent: "")
+        let mod = LensSettings.modifierSymbol
+        menu.addItem(withTitle: "框选翻译（\(mod)\(LensSettings.captureKey)）", action: #selector(startSelection), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "划词翻译（\(mod)\(LensSettings.selectionKey)）", action: #selector(translateSelectedTextFromMenu), keyEquivalent: "").target = self
+        let recapItem = menu.addItem(withTitle: "重截上次区域（\(mod)\(LensSettings.recaptureKey)）", action: #selector(recaptureLastArea), keyEquivalent: "")
         recapItem.target = self
         menu.addItem(.separator())
         let historyParent = NSMenuItem(title: "最近翻译历史", action: nil, keyEquivalent: "")
@@ -127,12 +128,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (2, LensSettings.selectionKey),
             (3, LensSettings.recaptureKey),
         ]
+        let carbonMods = Self.carbonModifierFlags()
         for (idNum, letter) in bindings {
             guard let code = Self.keyCode(for: letter) else { continue }
             var ref: EventHotKeyRef?
             let hkID = EventHotKeyID(signature: OSType(0x5151_4C53), id: idNum)
-            RegisterEventHotKey(code, UInt32(optionKey | shiftKey), hkID, GetApplicationEventTarget(), 0, &ref)
+            RegisterEventHotKey(code, carbonMods, hkID, GetApplicationEventTarget(), 0, &ref)
             hotKeys.append(ref)
+        }
+    }
+
+    private static func carbonModifierFlags() -> UInt32 {
+        switch LensSettings.hotKeyModifiers {
+        case "cmd": return UInt32(cmdKey)
+        case "opt_cmd": return UInt32(optionKey | cmdKey)
+        case "ctrl_cmd": return UInt32(controlKey | cmdKey)
+        default: return UInt32(optionKey | shiftKey)
         }
     }
 
@@ -167,11 +178,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func translateSelectedText() {
+        runSelectionTranslation(triggeredByHotKey: true)
+    }
+
+    @objc func translateSelectedTextFromMenu() {
+        runSelectionTranslation(triggeredByHotKey: false)
+    }
+
+    private func runSelectionTranslation(triggeredByHotKey: Bool) {
         Task { @MainActor in
             guard let text = await AccessibilityReader.readSelectedText(), !text.isEmpty else {
+                // If triggered by ⌘T and nothing is selected, forward ⌘T to the active app (e.g. New Tab in browser).
+                if triggeredByHotKey, let code = Self.keyCode(for: LensSettings.selectionKey) {
+                    forwardShortcutToFrontApp(keyCode: CGKeyCode(code))
+                    return
+                }
                 let alert = NSAlert()
                 alert.messageText = "未读取到选中的文字"
-                alert.informativeText = "请先在当前应用里选中一段文字再按 ⌥⇧\(LensSettings.selectionKey)。若首次使用，请在「系统设置 → 隐私与安全性 → 辅助功能」里允许「鹊桥屏译」。"
+                alert.informativeText = "请先在当前应用里选中一段文字再按 \(LensSettings.modifierSymbol)\(LensSettings.selectionKey)。若首次使用，请在「系统设置 → 隐私与安全性 → 辅助功能」里允许「鹊桥屏译」。"
                 alert.addButton(withTitle: "打开辅助功能设置")
                 alert.addButton(withTitle: "好")
                 if alert.runModal() == .alertFirstButtonReturn {
@@ -182,6 +206,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let session = LensSession(selectedText: text)
             show(session, near: nil)
             await session.run()
+        }
+    }
+
+    private func forwardShortcutToFrontApp(keyCode: CGKeyCode) {
+        for ref in hotKeys {
+            if let ref { UnregisterEventHotKey(ref) }
+        }
+        hotKeys.removeAll()
+        if let src = CGEventSource(stateID: .privateState),
+           let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true),
+           let up = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false) {
+            let flags: CGEventFlags
+            switch LensSettings.hotKeyModifiers {
+            case "cmd": flags = .maskCommand
+            case "opt_cmd": flags = [.maskCommand, .maskAlternate]
+            case "ctrl_cmd": flags = [.maskCommand, .maskControl]
+            default: flags = [.maskAlternate, .maskShift]
+            }
+            down.flags = flags
+            up.flags = flags
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.registerHotKeys()
         }
     }
 
@@ -201,7 +250,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Task { @MainActor in await self.translate(rect, reuseSession: session) }
             }
             lastCaptureSession = session
-            show(session, near: rect)
+            if LensSettings.defaultInPlaceOverlay {
+                showOverlayDefault(session, near: rect)
+            } else {
+                show(session, near: rect)
+            }
             await session.run()
         } catch LensError.permission {
             permissionAlert()
@@ -210,6 +263,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.messageText = "截取屏幕失败"
             alert.informativeText = error.localizedDescription
             alert.runModal()
+        }
+    }
+
+    @MainActor
+    private func showOverlayDefault(_ session: LensSession, near rect: CGRect) {
+        overlayController.show(for: session) { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.show(session, near: rect)
         }
     }
 
@@ -298,8 +359,10 @@ struct SettingsView: View {
     @AppStorage("skipShortLabels") private var skipShortLabels = false
     @AppStorage("preferAccessibility") private var preferAccessibility = true
     @AppStorage("alwaysOnTop") private var alwaysOnTop = true
-    @AppStorage("captureKey") private var captureKey = "T"
-    @AppStorage("selectionKey") private var selectionKey = "D"
+    @AppStorage("defaultInPlaceOverlay") private var defaultInPlaceOverlay = true
+    @AppStorage("hotKeyModifiers") private var hotKeyModifiers = "cmd"
+    @AppStorage("captureKey") private var captureKey = "O"
+    @AppStorage("selectionKey") private var selectionKey = "T"
     @AppStorage("recaptureKey") private var recaptureKey = "R"
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     var onShortcutsChanged: (() -> Void)? = nil
@@ -318,6 +381,7 @@ struct SettingsView: View {
                 .fixedSize()
             }
             Divider()
+            Toggle("框选后默认使用「原位悬浮模式」打开", isOn: $defaultInPlaceOverlay)
             Toggle("共用鹊桥 AI 术语表（\(Glossary.entries.count) 条）", isOn: $useGlossary)
             Toggle("原生应用优先用辅助功能读取原文（减少 OCR 错字）", isOn: $preferAccessibility)
             Toggle("合并图表内的零散短标签", isOn: $mergeDiagramLabels)
@@ -333,7 +397,14 @@ struct SettingsView: View {
                 }
             Divider()
             HStack(spacing: 12) {
-                Text("快捷键（配合 ⌥⇧）")
+                Picker("修饰键", selection: $hotKeyModifiers) {
+                    Text("⌘").tag("cmd")
+                    Text("⌥⌘").tag("opt_cmd")
+                    Text("⌃⌘").tag("ctrl_cmd")
+                    Text("⌥⇧").tag("opt_shift")
+                }
+                .frame(width: 120)
+                .onChange(of: hotKeyModifiers) { _, _ in onShortcutsChanged?() }
                 TextField("框选", text: $captureKey).frame(width: 44)
                 TextField("划词", text: $selectionKey).frame(width: 44)
                 TextField("重截", text: $recaptureKey).frame(width: 44)
@@ -343,7 +414,7 @@ struct SettingsView: View {
                 Button("检查录屏权限") { _ = CGRequestScreenCaptureAccess() }
                 Button("检查辅助功能权限") { _ = AccessibilityReader.isTrusted(prompt: true) }
             }
-            Text("默认：⌥⇧T 框选翻译 · ⌥⇧D 划词翻译 · ⌥⇧R 重新截取上次区域。")
+            Text("当前快捷键：\(LensSettings.modifierSymbol)\(captureKey) 框选翻译 · \(LensSettings.modifierSymbol)\(selectionKey) 划词翻译 · \(LensSettings.modifierSymbol)\(recaptureKey) 重新截取上次区域。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
         }

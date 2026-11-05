@@ -40,7 +40,17 @@ enum AccessibilityReader {
         let oldChangeCount = pb.changeCount
         let savedString = pb.string(forType: .string)
 
-        guard let src = CGEventSource(stateID: .hidSystemState),
+        // Wait briefly if Option/Shift/Control are still held down so they don't combine with ⌘C.
+        for _ in 0..<8 {
+            let flags = NSEvent.modifierFlags
+            if !flags.contains(.option) && !flags.contains(.shift) && !flags.contains(.control) {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        // Use .privateState so physically held modifier keys do not turn ⌘C into ⌘⌥⇧C.
+        guard let src = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_C), keyDown: true),
               let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_C), keyDown: false)
         else { return nil }
@@ -49,7 +59,10 @@ enum AccessibilityReader {
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
 
-        try? await Task.sleep(nanoseconds: 140_000_000)
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+            if pb.changeCount != oldChangeCount { break }
+        }
         guard pb.changeCount != oldChangeCount,
               let copied = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !copied.isEmpty

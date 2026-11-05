@@ -29,11 +29,23 @@ enum LensSettings {
     static var skipShortLabels: Bool { bool("skipShortLabels", false) }
     static var preferAccessibility: Bool { bool("preferAccessibility", true) }
     static var alwaysOnTop: Bool { bool("alwaysOnTop", true) }
+    /// Default to in-place floating overlay right after box selection.
+    static var defaultInPlaceOverlay: Bool { bool("defaultInPlaceOverlay", true) }
 
-    /// Global shortcut key letters (combined with ⌥⇧ by default).
-    static var captureKey: String { stored("captureKey", "T").uppercased() }
-    static var selectionKey: String { stored("selectionKey", "D").uppercased() }
+    /// Modifier preset: "cmd" (⌘), "opt_cmd" (⌥⌘), "ctrl_cmd" (⌃⌘), or "opt_shift" (⌥⇧).
+    static var hotKeyModifiers: String { stored("hotKeyModifiers", "cmd") }
+    static var captureKey: String { stored("captureKey", "O").uppercased() }
+    static var selectionKey: String { stored("selectionKey", "T").uppercased() }
     static var recaptureKey: String { stored("recaptureKey", "R").uppercased() }
+
+    static var modifierSymbol: String {
+        switch hotKeyModifiers {
+        case "cmd": return "⌘"
+        case "opt_cmd": return "⌥⌘"
+        case "ctrl_cmd": return "⌃⌘"
+        default: return "⌥⇧"
+        }
+    }
 
     private static func stored(_ key: String, _ fallback: String) -> String {
         let value = UserDefaults.standard.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -125,14 +137,15 @@ final class LensSession: ObservableObject {
             .filter { !$0.isEmpty }
         let items = blocks.isEmpty ? [selectedText.trimmingCharacters(in: .whitespacesAndNewlines)] : blocks
         self.paragraphs = items.enumerated().map { index, block in
-            let classification = TextLayout.classify(block)
+            // For explicit selection translation, allow both English->Chinese and Chinese->English.
+            let letters = block.unicodeScalars.filter { CharacterSet.letters.contains($0) }
             return Paragraph(
                 id: index,
                 rect: CGRect(x: 0, y: CGFloat(index * 48), width: 600, height: 36),
                 text: block,
                 lineCount: block.components(separatedBy: .newlines).count,
-                skip: classification.skip,
-                skipReason: classification.reason
+                skip: letters.isEmpty,
+                skipReason: letters.isEmpty ? "符号/数字" : nil
             )
         }
     }

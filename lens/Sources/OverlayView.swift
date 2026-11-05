@@ -21,8 +21,14 @@ final class InPlaceOverlayController {
     func show(for session: LensSession, onOpenWindow: @escaping () -> Void) {
         close()
         guard let rect = session.screenRect else { return }
-        let pad: CGFloat = 38
-        let frame = rect.insetBy(dx: -pad, dy: -pad)
+        let pad: CGFloat = 44
+        let extraBottom: CGFloat = 180
+        let frame = CGRect(
+            x: rect.minX - pad,
+            y: rect.minY - pad - extraBottom,
+            width: rect.width + pad * 2,
+            height: rect.height + pad * 2 + extraBottom
+        )
         let panel = NSPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -61,7 +67,7 @@ struct InPlaceOverlayRootView: View {
     let onClose: () -> Void
     @State private var hoveredID: Int?
     @State private var pinnedIDs: Set<Int> = []
-    @State private var showAll = false
+    @State private var showAll = true
 
     var body: some View {
         let size = session.pointSize
@@ -73,32 +79,35 @@ struct InPlaceOverlayRootView: View {
                 .offset(x: padding, y: padding)
                 .allowsHitTesting(false)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Text("鹊桥原位悬浮")
                     .font(.system(size: 11, weight: .semibold))
-                Button(showAll ? "收起卡片" : "全部展开") {
+                if !session.finished {
+                    ProgressView().controlSize(.mini).tint(.white)
+                }
+                Button(showAll ? "仅悬停显示" : "全部展开") {
                     showAll.toggle()
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 11))
                 if session.onRecapture != nil {
-                    Button("重截 ⌥⇧R") { session.onRecapture?() }
+                    Button("重截 \(LensSettings.modifierSymbol)\(LensSettings.recaptureKey)") { session.onRecapture?() }
                         .buttonStyle(.plain)
                         .font(.system(size: 11))
                 }
-                Button("切回窗口") { onOpenWindow() }
+                Button("对照窗口") { onOpenWindow() }
                     .buttonStyle(.plain)
                     .font(.system(size: 11))
                 Button("×") { onClose() }
                     .buttonStyle(.plain)
                     .font(.system(size: 13, weight: .bold))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
             .foregroundStyle(.white)
             .background(Capsule().fill(lensAccent.opacity(0.92)))
             .shadow(color: .black.opacity(0.2), radius: 4, y: 1)
-            .offset(x: padding, y: max(4, padding - 30))
+            .offset(x: padding, y: max(6, padding - 32))
 
             ForEach(Array(items.enumerated()), id: \.element.id) { index, paragraph in
                 let rect = session.pointRect(paragraph)

@@ -66,7 +66,7 @@ struct ResultView: View {
                     Label("重截", systemImage: "arrow.clockwise")
                         .font(.system(size: 11.5))
                 }
-                .help("重新截取同一区域（⌥⇧\(LensSettings.recaptureKey)）")
+                .help("重新截取同一区域（\(LensSettings.modifierSymbol)\(LensSettings.recaptureKey)）")
             }
             if session.screenRect != nil, session.onToggleOverlay != nil {
                 Button {
