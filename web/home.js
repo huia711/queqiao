@@ -48,7 +48,7 @@
   }
 
   function setupBookmarklet() {
-    const base = location.origin + window.QQ.url("").replace(/\/+$/, "");
+    const base = location.origin + window.QQ.BASE;
     const link = document.getElementById("bookmarkletLink");
     link.setAttribute("href", bookmarkletSource(base));
     link.addEventListener("click", (event) => {
