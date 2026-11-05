@@ -3,12 +3,56 @@ import Foundation
 import Vision
 
 enum OCR {
+    /// Vision's accurate recognizer sometimes drops a whole text block (e.g. a paragraph right under a large
+    /// heading). Run it on the full image and on overlapping horizontal strips, then keep every line that
+    /// is not already covered, so nothing visible disappears from the result.
     static func recognize(_ image: CGImage) throws -> [TextLine] {
+        var lines = try recognizeRegion(image, offsetY: 0)
+        let height = image.height
+        let strip = 360
+        if height > strip {
+            var top = 0
+            while top < height {
+                let stripHeight = min(strip, height - top)
+                if let piece = image.cropping(to: CGRect(x: 0, y: top, width: image.width, height: stripHeight)) {
+                    let found = try recognizeRegion(piece, offsetY: CGFloat(top))
+                    lines = merge(lines, found)
+                }
+                if top + stripHeight >= height { break }
+                top += strip * 2 / 3
+            }
+        }
+        lines = merge(lines, try recognizeRegion(image, offsetY: 0, level: .fast))
+        return lines
+    }
+
+    /// Adds lines from `extra` whose box does not substantially overlap a line already in `base`.
+    static func merge(_ base: [TextLine], _ extra: [TextLine]) -> [TextLine] {
+        var result = base
+        for line in extra {
+            let covered = result.contains { existing in
+                let overlap = existing.rect.intersection(line.rect)
+                guard !overlap.isNull else { return false }
+                let area = overlap.width * overlap.height
+                return area > 0.35 * min(existing.rect.width * existing.rect.height, line.rect.width * line.rect.height)
+            }
+            if !covered { result.append(line) }
+        }
+        return result
+    }
+
+    private static func recognizeRegion(
+        _ image: CGImage,
+        offsetY: CGFloat,
+        level: VNRequestTextRecognitionLevel = .accurate
+    ) throws -> [TextLine] {
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = level
         request.usesLanguageCorrection = true
         if let custom = ProcessInfo.processInfo.environment["LENS_LANGS"] {
             request.recognitionLanguages = custom.split(separator: ",").map(String.init)
+        } else if level == .fast {
+            request.recognitionLanguages = ["en-US"]
         } else {
             request.recognitionLanguages = ["en-US", "zh-Hans"]
         }
@@ -21,7 +65,7 @@ enum OCR {
             let box = observation.boundingBox
             let rect = CGRect(
                 x: box.minX * width,
-                y: (1 - box.maxY) * height,
+                y: (1 - box.maxY) * height + offsetY,
                 width: box.width * width,
                 height: box.height * height
             )
@@ -45,7 +89,7 @@ enum TextLayout {
         axSnippets: [String] = []
     ) -> ([Paragraph], Int) {
         let lines = mergeRows(raw.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty })
-        let groups = group(lines)
+        let groups = group(lines.filter { !isCutAtEdge($0, imageWidth: imageWidth) })
         var paragraphs: [Paragraph] = []
         var axHits = 0
         for (index, group) in groups.enumerated() {
@@ -77,6 +121,15 @@ enum TextLayout {
             ordered = clusterDiagramLabels(ordered, imageWidth: imageWidth)
         }
         return (ordered, axHits)
+    }
+
+    /// A short line touching the top or bottom edge of the capture is usually a sliver of UI cut by the
+    /// selection rectangle (a tab title, a toolbar label); translating it only adds noise.
+    static func isCutAtEdge(_ line: TextLine, imageWidth: CGFloat) -> Bool {
+        let touchesTop = line.rect.minY <= 2
+        guard touchesTop else { return false }
+        let words = line.text.split(whereSeparator: \.isWhitespace).count
+        return words <= 4 && line.rect.width < 0.3 * imageWidth
     }
 
     static func isShortDiagramLabel(_ paragraph: Paragraph, imageWidth: CGFloat) -> Bool {
@@ -202,7 +255,14 @@ enum TextLayout {
                 let last = group[group.count - 1].rect
                 let height = typical(group)
                 let gap = rect.minY - last.maxY
-                if gap < -0.4 * height || gap > 0.9 * height { continue }
+                if gap < -0.4 * height || gap > 0.75 * height { continue }
+                // A paragraph break is a gap clearly larger than the line gaps already inside the group.
+                if group.count >= 2 {
+                    let inner = zip(group, group.dropFirst()).map { $1.rect.minY - $0.rect.maxY }.max() ?? 0
+                    if gap > max(inner * 2.2, inner + 0.35 * height) { continue }
+                } else if gap > 0.55 * height {
+                    continue
+                }
                 let ratio = rect.height / max(height, 1)
                 if ratio < 0.68 || ratio > 1.6 { continue }
                 let block = bounds[index]

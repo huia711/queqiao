@@ -2,9 +2,8 @@ import Foundation
 
 enum Translator {
     static let baseSystemPrompt = """
-    你是专业的学术与技术双语翻译。对用户给出的每个编号段落：
-    - 如果是英文或其他外文，翻译成简体中文；
-    - 如果本身已经是中文，则翻译成地道、专业的英文。
+    你是专业的学术与技术翻译。把用户给出的每个编号段落翻译成简体中文。
+    只有当某段的原文主体本来就是中文时，才把这一段译成地道、专业的英文；英文原文一律译成中文，绝不原样照抄。
     要求：
     - 忠实、通顺、简洁；
     - 模型名、数据集名、代码、公式、URL、人名保留原文；
@@ -64,7 +63,9 @@ enum Translator {
         let combinedText = chunk.map(\.1).joined(separator: "\n")
         let system = baseSystemPrompt + Glossary.promptInstruction(for: combinedText)
         let content = try await streamComplete(system: system, user: prompt, model: model) { accumulated in
-            let cleaned = clean(accumulated)
+            // A trailing partial marker like "<<" or "<<2" would otherwise be shown as part of the
+            // previous paragraph, mixing two paragraphs' text while streaming.
+            let cleaned = clean(accumulated).replacingOccurrences(of: "<{1,2}\\s*\\d*\\s*>?$", with: "", options: .regularExpression)
             let partialParts = parse(cleaned)
             if partialParts.isEmpty, chunk.count == 1, !cleaned.isEmpty {
                 let stripped = cleaned.replacingOccurrences(of: "^<<\\s*1\\s*>>\\s*", with: "", options: .regularExpression)
@@ -136,25 +137,34 @@ enum Translator {
         }
         var accumulated = ""
         var lastEmit = Date.distantPast
-        for try await rawLine in bytes.lines {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        var buffer = Data()
+        var done = false
+        // `bytes.lines` buffers small SSE responses until the stream closes, so split lines ourselves.
+        for try await byte in bytes {
+            if byte != 0x0A {
+                buffer.append(byte)
+                continue
+            }
+            let line = String(decoding: buffer, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            buffer.removeAll(keepingCapacity: true)
             guard line.hasPrefix("data:") else { continue }
             let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            if payload == "[DONE]" { break }
-            guard let data = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]]
-            else { continue }
-            let first = choices.first
-            let delta = (first?["delta"] as? [String: Any])?["content"] as? String
-                ?? (first?["message"] as? [String: Any])?["content"] as? String
-            if let delta, !delta.isEmpty {
+            if payload == "[DONE]" {
+                done = true
+                break
+            }
+            guard let delta = Self.deltaText(payload), !delta.isEmpty else { continue }
+            accumulated += delta
+            let now = Date()
+            if now.timeIntervalSince(lastEmit) >= 0.04 {
+                lastEmit = now
+                await onDelta(accumulated)
+            }
+        }
+        if !done, !buffer.isEmpty {
+            let line = String(decoding: buffer, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("data:"), let delta = Self.deltaText(line.dropFirst(5).trimmingCharacters(in: .whitespaces)) {
                 accumulated += delta
-                let now = Date()
-                if now.timeIntervalSince(lastEmit) >= 0.045 {
-                    lastEmit = now
-                    await onDelta(accumulated)
-                }
             }
         }
         let finalText = clean(accumulated)
@@ -163,6 +173,16 @@ enum Translator {
         }
         await onDelta(accumulated)
         return finalText
+    }
+
+    private static func deltaText(_ payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first
+        else { return nil }
+        return (first["delta"] as? [String: Any])?["content"] as? String
+            ?? (first["message"] as? [String: Any])?["content"] as? String
     }
 
     static func completeNonStream(system: String, user: String, model: String) async throws -> String {

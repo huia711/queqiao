@@ -305,6 +305,7 @@ final class LensSession: ObservableObject {
 
     private func applyPartial(id: Int, text: String) {
         guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return }
+        if paragraphs[index].translation != nil, !paragraphs[index].streaming { return }
         if firstTokenTime.isEmpty {
             firstTokenTime = String(format: "%.1f", Date().timeIntervalSince(started))
         }

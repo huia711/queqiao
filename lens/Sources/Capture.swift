@@ -2,31 +2,43 @@ import AppKit
 import ScreenCaptureKit
 
 /// Full-screen dimmed overlay; drag a rectangle to choose the area to translate, Esc to cancel.
+/// The panels are non-activating, so the app under the cursor stays frontmost and Stage Manager does not
+/// rearrange windows while selecting (which would move the content away from the captured rectangle).
 final class SelectionController {
     private var windows: [NSWindow] = []
     private var completion: ((CGRect?) -> Void)?
+    private var escapeMonitor: Any?
 
     func begin(_ completion: @escaping (CGRect?) -> Void) {
         guard windows.isEmpty else { return }
         self.completion = completion
         for screen in NSScreen.screens {
-            let window = SelectionWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            let window = SelectionWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             window.level = .screenSaver
             window.isOpaque = false
             window.backgroundColor = .clear
             window.ignoresMouseEvents = false
+            window.hidesOnDeactivate = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             let view = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
             view.onFinish = { [weak self] rect in self?.finish(rect.map { $0.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY) }) }
             window.contentView = view
-            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            window.makeKey()
             windows.append(window)
         }
-        NSApp.activate(ignoringOtherApps: true)
+        escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { DispatchQueue.main.async { self?.finish(nil) } }
+        }
         NSCursor.crosshair.push()
     }
 
     private func finish(_ rect: CGRect?) {
+        guard !windows.isEmpty else { return }
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+            self.escapeMonitor = nil
+        }
         NSCursor.pop()
         windows.forEach { $0.orderOut(nil) }
         windows.removeAll()
@@ -36,7 +48,7 @@ final class SelectionController {
     }
 }
 
-final class SelectionWindow: NSWindow {
+final class SelectionWindow: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
