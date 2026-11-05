@@ -7,7 +7,14 @@ let lensAccentNS = NSColor(red: 0.545, green: 0.18, blue: 0.235, alpha: 1)
 enum LensSettings {
     static let defaultBaseURL = "http://127.0.0.1:3425/v1"
     static let defaultAPIKey = "magpie"
-    static let defaultModel = "workbuddy/glm-5.3-flashx"
+    static let defaultModel = "cursor/claude-haiku-5-5@300k"
+    /// Shown in the settings menu; screen translation needs fast, non-reasoning models.
+    static let suggestedModels = [
+        "cursor/claude-haiku-5-5@300k",
+        "workbuddy/glm-5.3-flashx",
+        "workbuddy/deepseek-v4.1-flash",
+        "workbuddy/hy4std",
+    ]
 
     static var baseURL: String {
         var value = stored("baseURL", defaultBaseURL)

@@ -146,8 +146,16 @@ struct SettingsView: View {
         Form {
             TextField("接口地址", text: $baseURL)
             SecureField("API Key", text: $apiKey)
-            TextField("模型", text: $model)
-            Text("任何 OpenAI 兼容的 /v1/chat/completions 接口都可以；默认是本机的 Magpie。快捷键 ⌥⇧T 框选翻译。")
+            HStack {
+                TextField("模型", text: $model)
+                Menu("常用") {
+                    ForEach(LensSettings.suggestedModels, id: \.self) { name in
+                        Button(name) { model = name }
+                    }
+                }
+                .fixedSize()
+            }
+            Text("任何 OpenAI 兼容的 /v1/chat/completions 接口都可以；默认是本机的 Magpie 和 Claude Haiku 5.5。推理模型（如 Hy4）译得好但要等 10 秒以上。快捷键 ⌥⇧T 框选翻译。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
         }
