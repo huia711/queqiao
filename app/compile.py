@@ -62,9 +62,13 @@ def cjk_preamble(engine: str) -> str:
     if engine == "xelatex":
         lines.append(r"\usepackage{xeCJK}")
         if serif:
+            # Templates may set \defaultfontfeatures{Extension=.otf} (e.g. XCharter), which would turn the
+            # CJK family name into a missing file name; keep that out of our CJK font setup only.
+            lines.append(r"\begingroup\defaultfontfeatures{}")
             lines.append(rf"\setCJKmainfont{{{serif}}}[AutoFakeBold=2.5,AutoFakeSlant=0.2,ItalicFont={{{fonts['kai'] or serif}}}]")
             lines.append(rf"\setCJKsansfont{{{fonts['sans'] or serif}}}[AutoFakeBold=2.5]")
             lines.append(rf"\setCJKmonofont{{{fonts['sans'] or serif}}}")
+            lines.append(r"\endgroup")
         lines.append(r"\xeCJKsetup{CJKspace=true}")
         lines.append(XELATEX_COMPAT)
     else:
