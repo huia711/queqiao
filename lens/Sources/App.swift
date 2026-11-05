@@ -360,6 +360,7 @@ struct SettingsView: View {
     @AppStorage("preferAccessibility") private var preferAccessibility = true
     @AppStorage("alwaysOnTop") private var alwaysOnTop = true
     @AppStorage("defaultInPlaceOverlay") private var defaultInPlaceOverlay = true
+    @AppStorage("showOverlayToolbar") private var showOverlayToolbar = false
     @AppStorage("hotKeyModifiers") private var hotKeyModifiers = "cmd"
     @AppStorage("captureKey") private var captureKey = "O"
     @AppStorage("selectionKey") private var selectionKey = "T"
@@ -382,6 +383,7 @@ struct SettingsView: View {
             }
             Divider()
             Toggle("框选后默认使用「原位悬浮模式」打开", isOn: $defaultInPlaceOverlay)
+            Toggle("原位悬浮时显示顶部工具栏", isOn: $showOverlayToolbar)
             Toggle("共用鹊桥 AI 术语表（\(Glossary.entries.count) 条）", isOn: $useGlossary)
             Toggle("原生应用优先用辅助功能读取原文（减少 OCR 错字）", isOn: $preferAccessibility)
             Toggle("合并图表内的零散短标签", isOn: $mergeDiagramLabels)
