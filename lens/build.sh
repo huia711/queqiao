@@ -10,6 +10,7 @@ BIN="$APP/Contents/MacOS/QueqiaoLens"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -parse-as-library -target "$(uname -m)-apple-macos14.0" \
+  -lsqlite3 \
   -o "$BIN" Sources/*.swift
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -37,6 +38,9 @@ PLIST
 ICONSET=../build/AppIcon.iconset
 if [ -d "$ICONSET" ]; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+fi
+if [ -f ../glossary/ai.csv ]; then
+  cp ../glossary/ai.csv "$APP/Contents/Resources/ai.csv"
 fi
 
 # Sign with the Apple Development certificate when there is one, so the screen-recording permission

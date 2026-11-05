@@ -32,18 +32,140 @@ enum OCR {
 
 /// Turns OCR lines into paragraphs in reading order.
 enum TextLayout {
-    static func paragraphs(from raw: [TextLine], imageWidth: CGFloat) -> [Paragraph] {
+    struct Classification {
+        var skip: Bool
+        var reason: String?
+    }
+
+    static func paragraphs(
+        from raw: [TextLine],
+        imageWidth: CGFloat,
+        mergeDiagramLabels: Bool = true,
+        skipShortLabels: Bool = false,
+        axSnippets: [String] = []
+    ) -> ([Paragraph], Int) {
         let lines = mergeRows(raw.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty })
         let groups = group(lines)
         var paragraphs: [Paragraph] = []
+        var axHits = 0
         for (index, group) in groups.enumerated() {
             let rect = group.dropFirst().reduce(group[0].rect) { $0.union($1.rect) }
-            let text = join(group)
+            var text = join(group)
+            if let matched = matchAccessibilityText(ocrText: text, axSnippets: axSnippets) {
+                text = matched
+                axHits += 1
+            }
+            let cls = classify(text)
             paragraphs.append(
-                Paragraph(id: index, rect: rect, text: text, lineCount: group.count, skip: !needsTranslation(text))
+                Paragraph(
+                    id: index,
+                    rect: rect,
+                    text: text,
+                    lineCount: group.count,
+                    skip: cls.skip,
+                    skipReason: cls.reason
+                )
             )
         }
-        return order(paragraphs, width: imageWidth)
+        var ordered = order(paragraphs, width: imageWidth)
+        if skipShortLabels {
+            for idx in ordered.indices where !ordered[idx].skip && isShortDiagramLabel(ordered[idx], imageWidth: imageWidth) {
+                ordered[idx].skip = true
+                ordered[idx].skipReason = "图内标签"
+            }
+        } else if mergeDiagramLabels {
+            ordered = clusterDiagramLabels(ordered, imageWidth: imageWidth)
+        }
+        return (ordered, axHits)
+    }
+
+    static func isShortDiagramLabel(_ paragraph: Paragraph, imageWidth: CGFloat) -> Bool {
+        guard paragraph.lineCount <= 2, paragraph.rect.width < 0.42 * imageWidth else { return false }
+        let trimmed = paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count > 44 { return false }
+        if trimmed.hasPrefix("Figure ") || trimmed.hasPrefix("Table ") { return false }
+        if let first = trimmed.first, first.isNumber, trimmed.contains(" ") {
+            let token = trimmed.split(separator: " ").first ?? ""
+            if token.allSatisfy({ $0.isNumber || $0 == "." }) { return false }
+        }
+        let words = trimmed.split(whereSeparator: \.isWhitespace)
+        return words.count <= 5 && !trimmed.hasSuffix(".")
+    }
+
+    /// Combines nearby short diagram labels inside the same figure band into one compact paragraph.
+    static func clusterDiagramLabels(_ items: [Paragraph], imageWidth: CGFloat) -> [Paragraph] {
+        var output: [Paragraph] = []
+        var pending: [Paragraph] = []
+
+        func flushPending() {
+            guard !pending.isEmpty else { return }
+            if pending.count == 1 {
+                output.append(pending[0])
+            } else {
+                let sorted = pending.sorted {
+                    abs($0.rect.minY - $1.rect.minY) < 18 ? $0.rect.minX < $1.rect.minX : $0.rect.minY < $1.rect.minY
+                }
+                let unionRect = sorted.dropFirst().reduce(sorted[0].rect) { $0.union($1.rect) }
+                let combinedText = sorted.map(\.text).joined(separator: " · ")
+                output.append(
+                    Paragraph(
+                        id: sorted[0].id,
+                        rect: unionRect,
+                        text: combinedText,
+                        lineCount: sorted.count,
+                        skip: false,
+                        isDiagramGroup: true
+                    )
+                )
+            }
+            pending.removeAll()
+        }
+
+        for item in items {
+            if !item.skip && isShortDiagramLabel(item, imageWidth: imageWidth) {
+                if let last = pending.last {
+                    let currentBand = pending.dropFirst().reduce(pending[0].rect) { $0.union($1.rect) }
+                    let verticalGap = item.rect.minY - currentBand.maxY
+                    if verticalGap > max(120, currentBand.height * 1.4) || pending.count >= 8 {
+                        flushPending()
+                    } else {
+                        _ = last
+                    }
+                }
+                pending.append(item)
+            } else {
+                flushPending()
+                output.append(item)
+            }
+        }
+        flushPending()
+        return output
+    }
+
+    /// Replaces noisy OCR text with an exact Accessibility string when token overlap is high.
+    static func matchAccessibilityText(ocrText: String, axSnippets: [String]) -> String? {
+        guard !axSnippets.isEmpty, ocrText.count >= 12 else { return nil }
+        let ocrWords = tokenSet(ocrText)
+        guard ocrWords.count >= 3 else { return nil }
+        var best: (score: Double, text: String)?
+        for candidate in axSnippets {
+            let candWords = tokenSet(candidate)
+            guard !candWords.isEmpty else { continue }
+            let common = ocrWords.intersection(candWords).count
+            let score = Double(common) / Double(max(ocrWords.count, candWords.count))
+            let lengthRatio = Double(min(ocrText.count, candidate.count)) / Double(max(ocrText.count, candidate.count))
+            if score >= 0.62, lengthRatio >= 0.65 {
+                if best == nil || score > best!.score {
+                    best = (score, candidate)
+                }
+            }
+        }
+        return best?.text
+    }
+
+    private static func tokenSet(_ text: String) -> Set<String> {
+        let parts = text.lowercased().split { !$0.isLetter && !$0.isNumber }
+        return Set(parts.filter { $0.count >= 2 }.map(String.init))
     }
 
     /// Vision sometimes splits one visual line into several fragments; glue fragments on the same row.
@@ -132,10 +254,44 @@ enum TextLayout {
 
     /// Skip text that is already mostly Chinese, or has almost no letters (numbers, symbols).
     static func needsTranslation(_ text: String) -> Bool {
+        !classify(text).skip
+    }
+
+    static func classify(_ text: String) -> Classification {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let letters = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }
-        if letters.count < 3 { return false }
+        if letters.count < 3 { return Classification(skip: true, reason: "符号/数字") }
         let chinese = letters.filter { (0x4E00...0x9FFF).contains($0.value) || (0x3400...0x4DBF).contains($0.value) }
-        return Double(chinese.count) / Double(letters.count) < 0.4
+        if Double(chinese.count) / Double(letters.count) >= 0.4 {
+            return Classification(skip: true, reason: "中文")
+        }
+        if isLikelyFormulaOrCode(trimmed) {
+            return Classification(skip: true, reason: "公式/代码")
+        }
+        return Classification(skip: false, reason: nil)
+    }
+
+    /// Detects standalone mathematical equations or source-code snippets so they stay untranslated.
+    static func isLikelyFormulaOrCode(_ text: String) -> Bool {
+        let nonSpace = text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }
+        guard nonSpace.count >= 6 else { return false }
+        let mathSymbols = CharacterSet(charactersIn: "=+−*/<>≤≥≠≈∑∏∫√∂∇∈∉∪∩⊂⊆×÷±→←↔⇒⇔{}[]^_|\\")
+        let mathCount = nonSpace.filter { mathSymbols.contains($0) }.count
+        let proseWords = text.split(whereSeparator: \.isWhitespace).filter { word in
+            word.count >= 4 && word.allSatisfy(\.isLetter)
+        }
+        if Double(mathCount) / Double(nonSpace.count) > 0.22 && proseWords.count < 5 {
+            return true
+        }
+        let codePrefixes = ["def ", "class ", "import ", "from ", "return ", "func ", "let ", "var ", "const ", "#include", "SELECT ", "git ", "sudo ", "curl "]
+        if codePrefixes.contains(where: { text.hasPrefix($0) }) && proseWords.count < 8 {
+            return true
+        }
+        let braces = nonSpace.filter { "{};=()".unicodeScalars.contains($0) }.count
+        if Double(braces) / Double(nonSpace.count) > 0.18 && proseWords.count < 6 {
+            return true
+        }
+        return false
     }
 
     /// Top-to-bottom, but within a band of narrow paragraphs read the left column before the right one.

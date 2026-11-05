@@ -11,6 +11,10 @@ struct ResultView: View {
     @ObservedObject var session: LensSession
     @State var mode: ViewMode = .bilingual
     @State private var copied: String?
+    @AppStorage("mergeDiagramLabels") private var mergeDiagramLabels = true
+    @AppStorage("skipShortLabels") private var skipShortLabels = false
+    @AppStorage("alwaysOnTop") private var alwaysOnTop = true
+    var onAlwaysOnTopChanged: ((Bool) -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,9 +25,13 @@ struct ResultView: View {
             } else if session.paragraphs.isEmpty {
                 message(session.status, systemImage: nil)
             } else {
-                switch mode {
-                case .bilingual: BilingualView(session: session)
-                case .margin: MarginView(session: session)
+                if session.image == nil {
+                    BilingualView(session: session)
+                } else {
+                    switch mode {
+                    case .bilingual: BilingualView(session: session)
+                    case .margin: MarginView(session: session)
+                    }
                 }
             }
         }
@@ -32,13 +40,15 @@ struct ResultView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 12) {
-            Picker("", selection: $mode) {
-                ForEach(ViewMode.allCases) { Text($0.rawValue).tag($0) }
+        HStack(spacing: 10) {
+            if session.image != nil {
+                Picker("", selection: $mode) {
+                    ForEach(ViewMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 120)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 150)
             if !session.finished { ProgressView().controlSize(.small) }
             Text(session.summary)
                 .font(.system(size: 11.5))
@@ -49,13 +59,53 @@ struct ResultView: View {
             if let copied {
                 Text(copied).font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
-            Menu("复制") {
+            if session.onRecapture != nil {
+                Button {
+                    session.onRecapture?()
+                } label: {
+                    Label("重截", systemImage: "arrow.clockwise")
+                        .font(.system(size: 11.5))
+                }
+                .help("重新截取同一区域（⌥⇧\(LensSettings.recaptureKey)）")
+            }
+            if session.screenRect != nil, session.onToggleOverlay != nil {
+                Button {
+                    session.onToggleOverlay?()
+                } label: {
+                    Label("原位悬浮", systemImage: "rectangle.on.rectangle")
+                        .font(.system(size: 11.5))
+                }
+                .help("在原屏幕位置旁贴上悬浮译文角标")
+            }
+            if session.image != nil {
+                Menu("选项") {
+                    Toggle("合并图内短标签", isOn: $mergeDiagramLabels)
+                        .onChange(of: mergeDiagramLabels) { _, _ in
+                            Task { await session.rebuildLayoutAndRetranslate() }
+                        }
+                    Toggle("跳过图内短标签", isOn: $skipShortLabels)
+                        .onChange(of: skipShortLabels) { _, _ in
+                            Task { await session.rebuildLayoutAndRetranslate() }
+                        }
+                    Divider()
+                    Toggle("窗口始终置顶", isOn: $alwaysOnTop)
+                        .onChange(of: alwaysOnTop) { _, value in
+                            onAlwaysOnTopChanged?(value)
+                        }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            Menu("复制/导出") {
                 Button("复制译文") { copy(false) }
                 Button("复制原文 + 译文") { copy(true) }
+                Button("复制 Markdown") { copyMarkdown() }
+                Divider()
+                Button("导出 Markdown 文件…") { session.exportMarkdownFile() }
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .disabled(!session.finished || session.paragraphs.isEmpty)
+            .disabled(session.paragraphs.isEmpty)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -64,6 +114,13 @@ struct ResultView: View {
     private func copy(_ bilingual: Bool) {
         session.copy(bilingual: bilingual)
         copied = "已复制"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = nil }
+    }
+
+    private func copyMarkdown() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(session.markdown(), forType: .string)
+        copied = "已复制 MD"
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = nil }
     }
 
@@ -87,12 +144,22 @@ struct TranslationText: View {
 
     var body: some View {
         if let text = paragraph.translation {
-            Text(text)
-                .font(.system(size: size))
-                .foregroundStyle(paragraph.failed ? Color.red : Color.primary)
-                .lineSpacing(3)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(paragraph.streaming ? text + " ▍" : text)
+                    .font(.system(size: size))
+                    .foregroundStyle(paragraph.failed ? Color.red : Color.primary)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if paragraph.cached {
+                    Text("缓存")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                }
+            }
         } else {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
@@ -118,7 +185,10 @@ struct BilingualView: View {
                                 .aspectRatio(contentMode: .fit)
                                 .frame(maxWidth: min(crop.size.width, 820), alignment: .leading)
                         } else {
-                            Text(paragraph.text).font(.system(size: 13)).foregroundStyle(.secondary)
+                            Text(paragraph.text)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
                         }
                         if !paragraph.skip {
                             TranslationText(paragraph: paragraph)
@@ -126,6 +196,10 @@ struct BilingualView: View {
                                 .overlay(alignment: .leading) {
                                     Rectangle().fill(lensAccent.opacity(0.55)).frame(width: 2.5)
                                 }
+                        } else if let reason = paragraph.skipReason, reason == "公式/代码" {
+                            Text("保留\(reason)原样")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
                         }
                     }
                 }
@@ -151,10 +225,12 @@ struct MarginView: View {
             ScrollView {
                 HStack(alignment: .top, spacing: 18) {
                     ZStack(alignment: .topLeading) {
-                        Image(nsImage: NSImage(cgImage: session.image, size: size))
-                            .interpolation(.high)
-                            .resizable()
-                            .frame(width: leftWidth, height: height)
+                        if let cgImage = session.image {
+                            Image(nsImage: NSImage(cgImage: cgImage, size: size))
+                                .interpolation(.high)
+                                .resizable()
+                                .frame(width: leftWidth, height: height)
+                        }
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, paragraph in
                             let rect = session.pointRect(paragraph)
                             Rectangle()

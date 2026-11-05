@@ -24,10 +24,25 @@ enum LensSettings {
 
     static var apiKey: String { stored("apiKey", defaultAPIKey) }
     static var model: String { stored("model", defaultModel) }
+    static var useGlossary: Bool { bool("useGlossary", true) }
+    static var mergeDiagramLabels: Bool { bool("mergeDiagramLabels", true) }
+    static var skipShortLabels: Bool { bool("skipShortLabels", false) }
+    static var preferAccessibility: Bool { bool("preferAccessibility", true) }
+    static var alwaysOnTop: Bool { bool("alwaysOnTop", true) }
+
+    /// Global shortcut key letters (combined with ⌥⇧ by default).
+    static var captureKey: String { stored("captureKey", "T").uppercased() }
+    static var selectionKey: String { stored("selectionKey", "D").uppercased() }
+    static var recaptureKey: String { stored("recaptureKey", "R").uppercased() }
 
     private static func stored(_ key: String, _ fallback: String) -> String {
         let value = UserDefaults.standard.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? fallback : value
+    }
+
+    private static func bool(_ key: String, _ fallback: Bool) -> Bool {
+        if UserDefaults.standard.object(forKey: key) == nil { return fallback }
+        return UserDefaults.standard.bool(forKey: key)
     }
 }
 
@@ -43,7 +58,11 @@ struct Paragraph: Identifiable {
     var text: String
     var lineCount: Int
     var skip: Bool
+    var skipReason: String? = nil
+    var isDiagramGroup: Bool = false
     var translation: String?
+    var streaming: Bool = false
+    var cached: Bool = false
     var failed = false
 }
 
@@ -65,24 +84,84 @@ enum LensError: LocalizedError {
 
 @MainActor
 final class LensSession: ObservableObject {
-    let image: CGImage
+    let id = UUID().uuidString
+    private(set) var image: CGImage?
     let scale: CGFloat
-    let model = LensSettings.model
-    let started = Date()
+    var screenRect: CGRect?
+    let isSelectionOnly: Bool
+    private(set) var model = LensSettings.model
+    private(set) var started = Date()
+    private var rawLines: [TextLine] = []
+    private var axSnippets: [String] = []
     @Published var paragraphs: [Paragraph] = []
     @Published var status = "正在识别文字…"
     @Published var error: String?
     @Published var finished = false
     @Published var elapsed = ""
+    @Published var firstTokenTime = ""
+    @Published var axMatchedCount = 0
     private(set) var crops: [Int: NSImage] = [:]
+    var onRecapture: (() -> Void)?
+    var onToggleOverlay: (() -> Void)?
 
-    init(image: CGImage, scale: CGFloat) {
+    init(image: CGImage, scale: CGFloat, screenRect: CGRect? = nil, axSnippets: [String] = []) {
         self.image = image
         self.scale = scale
+        self.screenRect = screenRect
+        self.axSnippets = axSnippets
+        self.isSelectionOnly = false
+    }
+
+    init(selectedText: String) {
+        self.image = nil
+        self.scale = 2
+        self.screenRect = nil
+        self.axSnippets = []
+        self.isSelectionOnly = true
+        let blocks = selectedText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let items = blocks.isEmpty ? [selectedText.trimmingCharacters(in: .whitespacesAndNewlines)] : blocks
+        self.paragraphs = items.enumerated().map { index, block in
+            let classification = TextLayout.classify(block)
+            return Paragraph(
+                id: index,
+                rect: CGRect(x: 0, y: CGFloat(index * 48), width: 600, height: 36),
+                text: block,
+                lineCount: block.components(separatedBy: .newlines).count,
+                skip: classification.skip,
+                skipReason: classification.reason
+            )
+        }
+    }
+
+    init(history: HistoryItem) {
+        self.image = nil
+        self.scale = 2
+        self.screenRect = nil
+        self.axSnippets = []
+        self.isSelectionOnly = true
+        self.model = history.model
+        self.finished = true
+        self.status = "历史记录"
+        self.paragraphs = history.pairs.enumerated().map { index, pair in
+            Paragraph(
+                id: index,
+                rect: CGRect(x: 0, y: CGFloat(index * 48), width: 600, height: 36),
+                text: pair.original,
+                lineCount: 1,
+                skip: false,
+                translation: pair.translation,
+                cached: true
+            )
+        }
     }
 
     var pointSize: CGSize {
-        CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        guard let image else { return CGSize(width: 640, height: 420) }
+        return CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
     }
 
     var translatable: [Paragraph] { paragraphs.filter { !$0.skip } }
@@ -94,8 +173,12 @@ final class LensSession: ObservableObject {
         if let error { return error }
         if paragraphs.isEmpty { return status }
         let total = translatable.count
-        let done = translatable.filter { $0.translation != nil }.count
+        let done = translatable.filter { $0.translation != nil && !$0.streaming }.count
+        let cachedCount = translatable.filter(\.cached).count
         var text = "\(paragraphs.count) 段 · 已译 \(done)/\(total) · \(model)"
+        if cachedCount > 0 { text += " · 缓存 \(cachedCount)" }
+        if axMatchedCount > 0 { text += " · 原生取词 \(axMatchedCount)" }
+        if !finished, !firstTokenTime.isEmpty { text += " · 首字 \(firstTokenTime)s" }
         if finished, !elapsed.isEmpty { text += " · \(elapsed) 秒" }
         return text
     }
@@ -111,34 +194,122 @@ final class LensSession: ObservableObject {
 
     func crop(for paragraph: Paragraph) -> NSImage? { crops[paragraph.id] }
 
+    func updateCapture(image: CGImage, scale: CGFloat, screenRect: CGRect?, axSnippets: [String]) async {
+        self.image = image
+        self.screenRect = screenRect
+        self.axSnippets = axSnippets
+        self.model = LensSettings.model
+        self.started = Date()
+        self.finished = false
+        self.error = nil
+        self.elapsed = ""
+        self.firstTokenTime = ""
+        self.crops.removeAll()
+        self.status = "正在识别文字…"
+        await run()
+    }
+
     func run() async {
+        started = Date()
+        finished = false
+        error = nil
         do {
-            let image = self.image
-            let lines = try await Task.detached(priority: .userInitiated) { try OCR.recognize(image) }.value
-            let found = TextLayout.paragraphs(from: lines, imageWidth: CGFloat(image.width))
-            for paragraph in found { crops[paragraph.id] = makeCrop(paragraph.rect) }
-            paragraphs = found
+            if let image {
+                let lines = try await Task.detached(priority: .userInitiated) { try OCR.recognize(image) }.value
+                rawLines = lines
+                buildParagraphsFromRawLines(image: image)
+            }
             if translatable.isEmpty {
-                status = found.isEmpty ? "没有识别到文字" : "没有需要翻译的外文"
+                status = paragraphs.isEmpty ? "没有识别到文字" : "没有需要翻译的外文"
                 finish()
                 return
             }
-            status = "翻译中…"
-            let items = translatable.map { ($0.id, $0.text) }
-            await Translator.translate(items) { [weak self] id, text, failed in
-                self?.apply(id: id, text: text, failed: failed)
-            }
-            status = "完成"
+            await translateCurrentParagraphs()
         } catch {
             self.error = error.localizedDescription
+            finish()
         }
-        finish()
     }
 
-    private func apply(id: Int, text: String, failed: Bool) {
+    func rebuildLayoutAndRetranslate() async {
+        guard let image, !rawLines.isEmpty else { return }
+        started = Date()
+        finished = false
+        firstTokenTime = ""
+        buildParagraphsFromRawLines(image: image)
+        await translateCurrentParagraphs()
+    }
+
+    private func buildParagraphsFromRawLines(image: CGImage) {
+        let (found, axHits) = TextLayout.paragraphs(
+            from: rawLines,
+            imageWidth: CGFloat(image.width),
+            mergeDiagramLabels: LensSettings.mergeDiagramLabels,
+            skipShortLabels: LensSettings.skipShortLabels,
+            axSnippets: LensSettings.preferAccessibility ? axSnippets : []
+        )
+        crops.removeAll()
+        for paragraph in found { crops[paragraph.id] = makeCrop(paragraph.rect) }
+        axMatchedCount = axHits
+        paragraphs = found
+    }
+
+    private func translateCurrentParagraphs() async {
+        let currentModel = model
+        var uncached: [(Int, String)] = []
+        for index in paragraphs.indices where !paragraphs[index].skip {
+            let sourceText = paragraphs[index].text
+            if let hit = TranslationCache.shared.get(model: currentModel, text: sourceText) {
+                paragraphs[index].translation = hit
+                paragraphs[index].cached = true
+                paragraphs[index].streaming = false
+                paragraphs[index].failed = false
+            } else {
+                uncached.append((paragraphs[index].id, sourceText))
+            }
+        }
+        if uncached.isEmpty {
+            status = "完成（全部命中缓存）"
+            finish()
+            HistoryStore.shared.record(session: self)
+            return
+        }
+        status = "流式翻译中…"
+        await Translator.translate(
+            uncached,
+            model: currentModel,
+            onPartial: { [weak self] id, partial in
+                self?.applyPartial(id: id, text: partial)
+            },
+            onFinal: { [weak self] id, final, failed in
+                self?.applyFinal(id: id, text: final, failed: failed)
+            }
+        )
+        status = "完成"
+        finish()
+        HistoryStore.shared.record(session: self)
+    }
+
+    private func applyPartial(id: Int, text: String) {
         guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return }
+        if firstTokenTime.isEmpty {
+            firstTokenTime = String(format: "%.1f", Date().timeIntervalSince(started))
+        }
         paragraphs[index].translation = text
+        paragraphs[index].streaming = true
+    }
+
+    private func applyFinal(id: Int, text: String, failed: Bool) {
+        guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return }
+        if firstTokenTime.isEmpty {
+            firstTokenTime = String(format: "%.1f", Date().timeIntervalSince(started))
+        }
+        paragraphs[index].translation = text
+        paragraphs[index].streaming = false
         paragraphs[index].failed = failed
+        if !failed {
+            TranslationCache.shared.put(model: model, text: paragraphs[index].text, translation: text)
+        }
     }
 
     private func finish() {
@@ -147,6 +318,7 @@ final class LensSession: ObservableObject {
     }
 
     private func makeCrop(_ rect: CGRect) -> NSImage? {
+        guard let image else { return nil }
         let pad = 5 * scale
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         let area = rect.insetBy(dx: -pad, dy: -pad).intersection(bounds).integral
@@ -162,5 +334,35 @@ final class LensSession: ObservableObject {
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(blocks.joined(separator: "\n\n"), forType: .string)
+    }
+
+    func markdown() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        var lines = [
+            "# 鹊桥屏译记录",
+            "",
+            "- 时间：\(formatter.string(from: Date()))",
+            "- 模型：`\(model)`",
+            "",
+        ]
+        for paragraph in paragraphs {
+            lines.append("> \(paragraph.text.replacingOccurrences(of: "\n", with: "\n> "))")
+            lines.append("")
+            if let translation = paragraph.translation, !paragraph.skip {
+                lines.append(translation)
+                lines.append("")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    func exportMarkdownFile() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "queqiao-lens-\(Int(Date().timeIntervalSince1970)).md"
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            try? markdown().write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 }

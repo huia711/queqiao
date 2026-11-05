@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -17,12 +18,18 @@ struct LensMain {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let selection = SelectionController()
-    private var hotKey: EventHotKeyRef?
+    private var hotKeys: [EventHotKeyRef?] = []
+    private var hotKeyHandlerInstalled = false
     private var resultWindows: [NSWindow] = []
     private var settingsWindow: NSWindow?
+    private var lastCaptureRect: CGRect?
+    private weak var lastCaptureSession: LensSession?
+    private let overlayController = InPlaceOverlayController()
+    private var historyMenu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -30,28 +37,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "鹊桥屏译")
             button.image?.isTemplate = true
         }
+        rebuildStatusMenu()
+        registerHotKeys()
+        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+    }
+
+    func rebuildStatusMenu() {
         let menu = NSMenu()
-        menu.addItem(withTitle: "框选翻译（⌥⇧T）", action: #selector(startSelection), keyEquivalent: "").target = self
+        menu.delegate = self
+        menu.addItem(withTitle: "框选翻译（⌥⇧\(LensSettings.captureKey)）", action: #selector(startSelection), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "划词翻译（⌥⇧\(LensSettings.selectionKey)）", action: #selector(translateSelectedText), keyEquivalent: "").target = self
+        let recapItem = menu.addItem(withTitle: "重截上次区域（⌥⇧\(LensSettings.recaptureKey)）", action: #selector(recaptureLastArea), keyEquivalent: "")
+        recapItem.target = self
+        menu.addItem(.separator())
+        let historyParent = NSMenuItem(title: "最近翻译历史", action: nil, keyEquivalent: "")
+        historyParent.submenu = historyMenu
+        menu.addItem(historyParent)
         menu.addItem(.separator())
         menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "退出鹊桥屏译", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
-        registerHotKey()
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
     }
 
-    /// ⌥⇧T anywhere starts a selection.
-    private func registerHotKey() {
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let pointer = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, user in
-            guard let user else { return noErr }
-            let delegate = Unmanaged<AppDelegate>.fromOpaque(user).takeUnretainedValue()
-            DispatchQueue.main.async { delegate.startSelection() }
-            return noErr
-        }, 1, &spec, pointer, nil)
-        let id = EventHotKeyID(signature: OSType(0x5151_4C53), id: 1)
-        RegisterEventHotKey(UInt32(kVK_ANSI_T), UInt32(optionKey | shiftKey), id, GetApplicationEventTarget(), 0, &hotKey)
+    func menuWillOpen(_ menu: NSMenu) {
+        historyMenu.removeAllItems()
+        let items = HistoryStore.shared.items
+        if items.isEmpty {
+            let empty = NSMenuItem(title: "暂无历史记录", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            historyMenu.addItem(empty)
+        } else {
+            for (idx, item) in items.prefix(12).enumerated() {
+                let mItem = NSMenuItem(
+                    title: "[\(item.sourceKind)] \(item.title) · \(item.relativeTime)",
+                    action: #selector(openHistoryItem(_:)),
+                    keyEquivalent: ""
+                )
+                mItem.tag = idx
+                mItem.target = self
+                historyMenu.addItem(mItem)
+            }
+            historyMenu.addItem(.separator())
+            let clearItem = NSMenuItem(title: "清空历史记录", action: #selector(clearHistory), keyEquivalent: "")
+            clearItem.target = self
+            historyMenu.addItem(clearItem)
+        }
+    }
+
+    @objc private func openHistoryItem(_ sender: NSMenuItem) {
+        let items = HistoryStore.shared.items
+        guard sender.tag >= 0, sender.tag < items.count else { return }
+        let session = LensSession(history: items[sender.tag])
+        show(session, near: nil)
+    }
+
+    @objc private func clearHistory() {
+        HistoryStore.shared.clear()
+    }
+
+    func registerHotKeys() {
+        for ref in hotKeys {
+            if let ref { UnregisterEventHotKey(ref) }
+        }
+        hotKeys.removeAll()
+
+        if !hotKeyHandlerInstalled {
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            let pointer = Unmanaged.passUnretained(self).toOpaque()
+            InstallEventHandler(GetApplicationEventTarget(), { _, event, user in
+                guard let user, let event else { return noErr }
+                var hkID = EventHotKeyID()
+                GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hkID)
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(user).takeUnretainedValue()
+                DispatchQueue.main.async {
+                    switch hkID.id {
+                    case 1: delegate.startSelection()
+                    case 2: delegate.translateSelectedText()
+                    case 3: delegate.recaptureLastArea()
+                    default: break
+                    }
+                }
+                return noErr
+            }, 1, &spec, pointer, nil)
+            hotKeyHandlerInstalled = true
+        }
+
+        let bindings: [(UInt32, String)] = [
+            (1, LensSettings.captureKey),
+            (2, LensSettings.selectionKey),
+            (3, LensSettings.recaptureKey),
+        ]
+        for (idNum, letter) in bindings {
+            guard let code = Self.keyCode(for: letter) else { continue }
+            var ref: EventHotKeyRef?
+            let hkID = EventHotKeyID(signature: OSType(0x5151_4C53), id: idNum)
+            RegisterEventHotKey(code, UInt32(optionKey | shiftKey), hkID, GetApplicationEventTarget(), 0, &ref)
+            hotKeys.append(ref)
+        }
+    }
+
+    private static func keyCode(for letter: String) -> UInt32? {
+        let map: [String: Int] = [
+            "A": kVK_ANSI_A, "B": kVK_ANSI_B, "C": kVK_ANSI_C, "D": kVK_ANSI_D,
+            "E": kVK_ANSI_E, "F": kVK_ANSI_F, "G": kVK_ANSI_G, "H": kVK_ANSI_H,
+            "I": kVK_ANSI_I, "J": kVK_ANSI_J, "K": kVK_ANSI_K, "L": kVK_ANSI_L,
+            "M": kVK_ANSI_M, "N": kVK_ANSI_N, "O": kVK_ANSI_O, "P": kVK_ANSI_P,
+            "Q": kVK_ANSI_Q, "R": kVK_ANSI_R, "S": kVK_ANSI_S, "T": kVK_ANSI_T,
+            "U": kVK_ANSI_U, "V": kVK_ANSI_V, "W": kVK_ANSI_W, "X": kVK_ANSI_X,
+            "Y": kVK_ANSI_Y, "Z": kVK_ANSI_Z,
+        ]
+        return map[letter.uppercased()].map(UInt32.init)
     }
 
     @objc func startSelection() {
@@ -61,11 +156,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func recaptureLastArea() {
+        guard let rect = lastCaptureRect else {
+            startSelection()
+            return
+        }
+        Task { @MainActor in
+            await self.translate(rect, reuseSession: self.lastCaptureSession)
+        }
+    }
+
+    @objc func translateSelectedText() {
+        Task { @MainActor in
+            guard let text = await AccessibilityReader.readSelectedText(), !text.isEmpty else {
+                let alert = NSAlert()
+                alert.messageText = "未读取到选中的文字"
+                alert.informativeText = "请先在当前应用里选中一段文字再按 ⌥⇧\(LensSettings.selectionKey)。若首次使用，请在「系统设置 → 隐私与安全性 → 辅助功能」里允许「鹊桥屏译」。"
+                alert.addButton(withTitle: "打开辅助功能设置")
+                alert.addButton(withTitle: "好")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    _ = AccessibilityReader.isTrusted(prompt: true)
+                }
+                return
+            }
+            let session = LensSession(selectedText: text)
+            show(session, near: nil)
+            await session.run()
+        }
+    }
+
     @MainActor
-    private func translate(_ rect: CGRect) async {
+    private func translate(_ rect: CGRect, reuseSession: LensSession? = nil) async {
+        lastCaptureRect = rect
+        let axSnippets = LensSettings.preferAccessibility ? AccessibilityReader.sampleStrings(in: rect) : []
         do {
             let (image, scale) = try await ScreenCapture.capture(rect)
-            let session = LensSession(image: image, scale: scale)
+            if let existing = reuseSession {
+                await existing.updateCapture(image: image, scale: scale, screenRect: rect, axSnippets: axSnippets)
+                return
+            }
+            let session = LensSession(image: image, scale: scale, screenRect: rect, axSnippets: axSnippets)
+            session.onRecapture = { [weak self, weak session] in
+                guard let self, let rect = session?.screenRect else { return }
+                Task { @MainActor in await self.translate(rect, reuseSession: session) }
+            }
+            lastCaptureSession = session
             show(session, near: rect)
             await session.run()
         } catch LensError.permission {
@@ -79,13 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func show(_ session: LensSession, near rect: CGRect) {
-        let screen = NSScreen.screens.first(where: { $0.frame.contains(CGPoint(x: rect.midX, y: rect.midY)) }) ?? NSScreen.main!
+    private func show(_ session: LensSession, near rect: CGRect?) {
+        let mouse = NSEvent.mouseLocation
+        let anchor = rect ?? CGRect(x: mouse.x - 120, y: mouse.y - 80, width: 240, height: 160)
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(CGPoint(x: anchor.midX, y: anchor.midY)) }) ?? NSScreen.main!
         let visible = screen.visibleFrame
-        let width = min(max(rect.width * 1.9 + 60, 640), visible.width - 40)
-        let height = min(max(rect.height + 140, 420), visible.height - 40)
-        var origin = CGPoint(x: rect.maxX + 16, y: rect.maxY - height)
-        if origin.x + width > visible.maxX { origin.x = max(visible.minX + 20, rect.minX - width - 16) }
+        let width = min(max(anchor.width * 1.8 + 60, 620), visible.width - 40)
+        let height = min(max(anchor.height + 140, 380), visible.height - 40)
+        var origin = CGPoint(x: anchor.maxX + 16, y: anchor.maxY - height)
+        if origin.x + width > visible.maxX { origin.x = max(visible.minX + 20, anchor.minX - width - 16) }
         if origin.x < visible.minX { origin.x = visible.midX - width / 2 }
         origin.y = min(max(origin.y, visible.minY + 20), visible.maxY - height - 20)
         let window = NSWindow(
@@ -96,8 +233,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "鹊桥屏译"
         window.isReleasedWhenClosed = false
-        window.level = .floating
-        window.contentView = NSHostingView(rootView: ResultView(session: session))
+        window.level = LensSettings.alwaysOnTop ? .floating : .normal
+        window.setFrameAutosaveName("QueqiaoLensResultWindow")
+        session.onToggleOverlay = { [weak self, weak window, weak session] in
+            guard let self, let session else { return }
+            window?.orderOut(nil)
+            self.overlayController.show(for: session) {
+                window?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+        let rootView = ResultView(session: session) { [weak window] onTop in
+            window?.level = onTop ? .floating : .normal
+        }
+        window.contentView = NSHostingView(rootView: rootView)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         resultWindows.removeAll { !$0.isVisible }
@@ -119,14 +268,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openSettings() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 230),
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 420),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
             window.title = "鹊桥屏译 · 设置"
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: SettingsView())
+            window.contentView = NSHostingView(rootView: SettingsView { [weak self] in
+                self?.registerHotKeys()
+                self?.rebuildStatusMenu()
+            })
             window.center()
             settingsWindow = window
         }
@@ -141,6 +293,16 @@ struct SettingsView: View {
     @AppStorage("baseURL") private var baseURL = LensSettings.defaultBaseURL
     @AppStorage("apiKey") private var apiKey = LensSettings.defaultAPIKey
     @AppStorage("model") private var model = LensSettings.defaultModel
+    @AppStorage("useGlossary") private var useGlossary = true
+    @AppStorage("mergeDiagramLabels") private var mergeDiagramLabels = true
+    @AppStorage("skipShortLabels") private var skipShortLabels = false
+    @AppStorage("preferAccessibility") private var preferAccessibility = true
+    @AppStorage("alwaysOnTop") private var alwaysOnTop = true
+    @AppStorage("captureKey") private var captureKey = "T"
+    @AppStorage("selectionKey") private var selectionKey = "D"
+    @AppStorage("recaptureKey") private var recaptureKey = "R"
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    var onShortcutsChanged: (() -> Void)? = nil
 
     var body: some View {
         Form {
@@ -155,12 +317,38 @@ struct SettingsView: View {
                 }
                 .fixedSize()
             }
-            Text("任何 OpenAI 兼容的 /v1/chat/completions 接口都可以；默认是本机的 Magpie 和 Claude Haiku 5.5。推理模型（如 Hy4）译得好但要等 10 秒以上。快捷键 ⌥⇧T 框选翻译。")
+            Divider()
+            Toggle("共用鹊桥 AI 术语表（\(Glossary.entries.count) 条）", isOn: $useGlossary)
+            Toggle("原生应用优先用辅助功能读取原文（减少 OCR 错字）", isOn: $preferAccessibility)
+            Toggle("合并图表内的零散短标签", isOn: $mergeDiagramLabels)
+            Toggle("直接跳过图表内的短标签", isOn: $skipShortLabels)
+            Toggle("结果窗口默认置顶", isOn: $alwaysOnTop)
+            Toggle("登录 Mac 时自动启动鹊桥屏译", isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { _, enabled in
+                    if enabled {
+                        try? SMAppService.mainApp.register()
+                    } else {
+                        try? SMAppService.mainApp.unregister()
+                    }
+                }
+            Divider()
+            HStack(spacing: 12) {
+                Text("快捷键（配合 ⌥⇧）")
+                TextField("框选", text: $captureKey).frame(width: 44)
+                TextField("划词", text: $selectionKey).frame(width: 44)
+                TextField("重截", text: $recaptureKey).frame(width: 44)
+                Button("应用") { onShortcutsChanged?() }
+            }
+            HStack(spacing: 10) {
+                Button("检查录屏权限") { _ = CGRequestScreenCaptureAccess() }
+                Button("检查辅助功能权限") { _ = AccessibilityReader.isTrusted(prompt: true) }
+            }
+            Text("默认：⌥⇧T 框选翻译 · ⌥⇧D 划词翻译 · ⌥⇧R 重新截取上次区域。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 500)
     }
 }
 
@@ -184,7 +372,7 @@ enum Offline {
             let session = LensSession(image: image, scale: 2)
             await session.run()
             for paragraph in session.paragraphs {
-                let mark = paragraph.skip ? "skip" : "tran"
+                let mark = paragraph.skip ? "skip(\(paragraph.skipReason ?? ""))" : (paragraph.cached ? "cache" : (paragraph.isDiagramGroup ? "diag" : "tran"))
                 print("[\(paragraph.id)] \(mark) lines=\(paragraph.lineCount) | \(paragraph.text.prefix(70)) || \((paragraph.translation ?? "").prefix(50))")
             }
             print(session.summary)
