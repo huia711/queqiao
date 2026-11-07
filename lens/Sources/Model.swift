@@ -37,6 +37,13 @@ enum LensSettings {
     static var captureKey: String { stored("captureKey", "O").uppercased() }
     static var selectionKey: String { stored("selectionKey", "T").uppercased() }
     static var recaptureKey: String { stored("recaptureKey", "R").uppercased() }
+    /// OCR uses the same modifiers plus ⇧ (⌘⇧O by default).
+    static var ocrKey: String { stored("ocrKey", "O").uppercased() }
+    static var ocrAutoCopy: Bool { bool("ocrAutoCopy", true) }
+
+    static var ocrModifierSymbol: String {
+        hotKeyModifiers == "opt_shift" ? "⌥⇧⌘" : modifierSymbol.replacingOccurrences(of: "⌘", with: "⇧⌘")
+    }
 
     static var modifierSymbol: String {
         switch hotKeyModifiers {
@@ -76,6 +83,8 @@ struct Paragraph: Identifiable {
     var streaming: Bool = false
     var cached: Bool = false
     var failed = false
+    /// The OCR lines that make up this paragraph, top to bottom.
+    var lineTexts: [String] = []
 }
 
 enum LensError: LocalizedError {

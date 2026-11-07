@@ -9,7 +9,7 @@ final class SelectionController {
     private var completion: ((CGRect?) -> Void)?
     private var escapeMonitor: Any?
 
-    func begin(_ completion: @escaping (CGRect?) -> Void) {
+    func begin(hint: String = "拖动框选要翻译的区域 · Esc 取消", _ completion: @escaping (CGRect?) -> Void) {
         guard windows.isEmpty else { return }
         self.completion = completion
         for screen in NSScreen.screens {
@@ -21,6 +21,7 @@ final class SelectionController {
             window.hidesOnDeactivate = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             let view = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            view.hint = hint
             view.onFinish = { [weak self] rect in self?.finish(rect.map { $0.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY) }) }
             window.contentView = view
             window.orderFrontRegardless()
@@ -54,6 +55,7 @@ final class SelectionWindow: NSPanel {
 
 final class SelectionView: NSView {
     var onFinish: ((CGRect?) -> Void)?
+    var hint = "拖动框选要翻译的区域 · Esc 取消"
     private var start: NSPoint?
     private var current: NSPoint?
 
@@ -76,7 +78,7 @@ final class SelectionView: NSView {
             path.lineWidth = 1.5
             path.stroke()
         } else {
-            let hint = "拖动框选要翻译的区域 · Esc 取消" as NSString
+            let hint = self.hint as NSString
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 15, weight: .medium),
                 .foregroundColor: NSColor.white,

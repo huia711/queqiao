@@ -10,6 +10,10 @@ struct LensMain {
             Offline.run(Array(CommandLine.arguments[(index + 1)...]))
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--ocr"), index + 1 < CommandLine.arguments.count {
+            Offline.ocr(CommandLine.arguments[index + 1])
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -29,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastCaptureRect: CGRect?
     private weak var lastCaptureSession: LensSession?
     private let overlayController = InPlaceOverlayController()
+    private let ocrController = OCRPanelController()
     private var historyMenu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -50,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "划词翻译（\(mod)\(LensSettings.selectionKey)）", action: #selector(translateSelectedTextFromMenu), keyEquivalent: "").target = self
         let recapItem = menu.addItem(withTitle: "重截上次区域（\(mod)\(LensSettings.recaptureKey)）", action: #selector(recaptureLastArea), keyEquivalent: "")
         recapItem.target = self
+        menu.addItem(withTitle: "框选识别文字 OCR（\(LensSettings.ocrModifierSymbol)\(LensSettings.ocrKey)）", action: #selector(startOCR), keyEquivalent: "").target = self
         menu.addItem(.separator())
         let historyParent = NSMenuItem(title: "最近翻译历史", action: nil, keyEquivalent: "")
         historyParent.submenu = historyMenu
@@ -115,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case 1: delegate.startSelection()
                     case 2: delegate.translateSelectedText()
                     case 3: delegate.recaptureLastArea()
+                    case 4: delegate.startOCR()
                     default: break
                     }
                 }
@@ -134,6 +141,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var ref: EventHotKeyRef?
             let hkID = EventHotKeyID(signature: OSType(0x5151_4C53), id: idNum)
             RegisterEventHotKey(code, carbonMods, hkID, GetApplicationEventTarget(), 0, &ref)
+            hotKeys.append(ref)
+        }
+        if let code = Self.keyCode(for: LensSettings.ocrKey) {
+            let extra = LensSettings.hotKeyModifiers == "opt_shift" ? cmdKey : shiftKey
+            var ref: EventHotKeyRef?
+            let hkID = EventHotKeyID(signature: OSType(0x5151_4C53), id: 4)
+            RegisterEventHotKey(code, carbonMods | UInt32(extra), hkID, GetApplicationEventTarget(), 0, &ref)
             hotKeys.append(ref)
         }
     }
@@ -164,6 +178,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         selection.begin { [weak self] rect in
             guard let self, let rect else { return }
             Task { @MainActor in await self.translate(rect) }
+        }
+    }
+
+    @objc func startOCR() {
+        selection.begin(hint: "拖动框选要识别文字的区域 · Esc 取消") { [weak self] rect in
+            guard let self, let rect else { return }
+            Task { @MainActor in await self.recognize(rect) }
+        }
+    }
+
+    @MainActor
+    private func recognize(_ rect: CGRect) async {
+        let axSnippets = LensSettings.preferAccessibility ? AccessibilityReader.sampleStrings(in: rect) : []
+        do {
+            let (image, _) = try await ScreenCapture.capture(rect)
+            let result = OCRResult()
+            ocrController.show(result, near: rect) { [weak self] text in
+                guard let self else { return }
+                let session = LensSession(selectedText: text)
+                self.show(session, near: rect)
+                Task { await session.run() }
+            }
+            await result.run(image: image, axSnippets: axSnippets)
+        } catch LensError.permission {
+            permissionAlert()
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "截取屏幕失败"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
         }
     }
 
@@ -365,6 +409,8 @@ struct SettingsView: View {
     @AppStorage("captureKey") private var captureKey = "O"
     @AppStorage("selectionKey") private var selectionKey = "T"
     @AppStorage("recaptureKey") private var recaptureKey = "R"
+    @AppStorage("ocrKey") private var ocrKey = "O"
+    @AppStorage("ocrAutoCopy") private var ocrAutoCopy = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     var onShortcutsChanged: (() -> Void)? = nil
 
@@ -389,6 +435,7 @@ struct SettingsView: View {
             Toggle("合并图表内的零散短标签", isOn: $mergeDiagramLabels)
             Toggle("直接跳过图表内的短标签", isOn: $skipShortLabels)
             Toggle("结果窗口默认置顶", isOn: $alwaysOnTop)
+            Toggle("OCR 识别后自动复制到剪贴板", isOn: $ocrAutoCopy)
             Toggle("登录 Mac 时自动启动鹊桥屏译", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, enabled in
                     if enabled {
@@ -410,13 +457,14 @@ struct SettingsView: View {
                 TextField("框选", text: $captureKey).frame(width: 44)
                 TextField("划词", text: $selectionKey).frame(width: 44)
                 TextField("重截", text: $recaptureKey).frame(width: 44)
+                TextField("OCR", text: $ocrKey).frame(width: 44)
                 Button("应用") { onShortcutsChanged?() }
             }
             HStack(spacing: 10) {
                 Button("检查录屏权限") { _ = CGRequestScreenCaptureAccess() }
                 Button("检查辅助功能权限") { _ = AccessibilityReader.isTrusted(prompt: true) }
             }
-            Text("当前快捷键：\(LensSettings.modifierSymbol)\(captureKey) 框选翻译 · \(LensSettings.modifierSymbol)\(selectionKey) 划词翻译 · \(LensSettings.modifierSymbol)\(recaptureKey) 重新截取上次区域。")
+            Text("当前快捷键：\(LensSettings.modifierSymbol)\(captureKey) 框选翻译 · \(LensSettings.modifierSymbol)\(selectionKey) 划词翻译 · \(LensSettings.modifierSymbol)\(recaptureKey) 重新截取 · \(LensSettings.ocrModifierSymbol)\(ocrKey) 识别文字（OCR）。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
         }
@@ -428,6 +476,23 @@ struct SettingsView: View {
 /// `--render <image> <out.png> [bilingual|margin] [width height]`: run OCR + translation on an image
 /// and render the result window to a PNG, for testing without screen access.
 enum Offline {
+    /// `--ocr <image>`: print the OCR text (merged paragraphs, then line-preserving) for testing.
+    static func ocr(_ path: String) {
+        guard let source = NSImage(contentsOfFile: path),
+              let image = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let raw = try? OCR.recognize(image)
+        else {
+            FileHandle.standardError.write(Data("cannot read \(path)\n".utf8))
+            exit(2)
+        }
+        let text = TextLayout.recognizedText(from: raw, imageWidth: CGFloat(image.width))
+        print("=== \(text.count) paragraphs, merged ===")
+        print(text.merged)
+        print("=== keep lines ===")
+        print(text.lines)
+        exit(0)
+    }
+
     static func run(_ args: [String]) {
         guard args.count >= 2,
               let source = NSImage(contentsOfFile: args[0]),

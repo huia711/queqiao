@@ -86,10 +86,18 @@ enum TextLayout {
         imageWidth: CGFloat,
         mergeDiagramLabels: Bool = true,
         skipShortLabels: Bool = false,
-        axSnippets: [String] = []
+        axSnippets: [String] = [],
+        dropEdgeFragments: Bool = true
     ) -> ([Paragraph], Int) {
         let lines = mergeRows(raw.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty })
-        let groups = group(lines.filter { !isCutAtEdge($0, imageWidth: imageWidth) })
+        var kept = lines
+        if dropEdgeFragments {
+            let heights = lines.map(\.rect.height).sorted()
+            let median = heights.isEmpty ? 0 : heights[heights.count / 2]
+            let trimmed = lines.filter { !isCutAtEdge($0, imageWidth: imageWidth, medianHeight: median) }
+            if !trimmed.isEmpty { kept = trimmed }
+        }
+        let groups = group(kept)
         var paragraphs: [Paragraph] = []
         var axHits = 0
         for (index, group) in groups.enumerated() {
@@ -100,16 +108,16 @@ enum TextLayout {
                 axHits += 1
             }
             let cls = classify(text)
-            paragraphs.append(
-                Paragraph(
-                    id: index,
-                    rect: rect,
-                    text: text,
-                    lineCount: group.count,
-                    skip: cls.skip,
-                    skipReason: cls.reason
-                )
+            var paragraph = Paragraph(
+                id: index,
+                rect: rect,
+                text: text,
+                lineCount: group.count,
+                skip: cls.skip,
+                skipReason: cls.reason
             )
+            paragraph.lineTexts = group.map { $0.text.trimmingCharacters(in: .whitespaces) }
+            paragraphs.append(paragraph)
         }
         var ordered = order(paragraphs, width: imageWidth)
         if skipShortLabels {
@@ -123,11 +131,26 @@ enum TextLayout {
         return (ordered, axHits)
     }
 
-    /// A short line touching the top or bottom edge of the capture is usually a sliver of UI cut by the
-    /// selection rectangle (a tab title, a toolbar label); translating it only adds noise.
-    static func isCutAtEdge(_ line: TextLine, imageWidth: CGFloat) -> Bool {
-        let touchesTop = line.rect.minY <= 2
-        guard touchesTop else { return false }
+    /// Plain text of a capture for OCR: every paragraph (including Chinese and labels), in reading order.
+    static func recognizedText(from raw: [TextLine], imageWidth: CGFloat, axSnippets: [String] = []) -> (merged: String, lines: String, count: Int) {
+        let (found, _) = paragraphs(
+            from: raw,
+            imageWidth: imageWidth,
+            mergeDiagramLabels: false,
+            skipShortLabels: false,
+            axSnippets: axSnippets,
+            dropEdgeFragments: false
+        )
+        let merged = found.map(\.text).joined(separator: "\n\n")
+        let lines = found.map { $0.lineTexts.isEmpty ? $0.text : $0.lineTexts.joined(separator: "\n") }.joined(separator: "\n\n")
+        return (merged, lines, found.count)
+    }
+
+    /// A short, clipped-looking line touching the top edge of the capture is usually a sliver of UI cut by
+    /// the selection rectangle (a tab title, a toolbar label); translating it only adds noise. A real line
+    /// that the user selected tightly keeps its full height, so it is not dropped.
+    static func isCutAtEdge(_ line: TextLine, imageWidth: CGFloat, medianHeight: CGFloat) -> Bool {
+        guard line.rect.minY <= 2, medianHeight > 0, line.rect.height < 0.75 * medianHeight else { return false }
         let words = line.text.split(whereSeparator: \.isWhitespace).count
         return words <= 4 && line.rect.width < 0.3 * imageWidth
     }
