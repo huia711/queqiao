@@ -18,6 +18,15 @@ API_URL = "https://export.arxiv.org/api/query"
 API_INTERVAL = 1.0
 _api_lock = asyncio.Lock()
 _api_last = 0.0
+# A brief network drop (VPN switch, Wi-Fi roaming) should not fail a whole translation job.
+RETRY_DELAYS = (2, 5, 12)
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _retryable(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in RETRY_STATUS
 
 
 class ArxivError(RuntimeError):
@@ -71,15 +80,22 @@ def parse_entry(entry: ET.Element) -> dict | None:
 async def api_query(client: httpx.AsyncClient, params: dict) -> tuple[list[dict], int]:
     """Call the arXiv Atom API (rate limited); returns entries and the total hit count."""
     global _api_last
-    async with _api_lock:
-        wait = API_INTERVAL - (time.monotonic() - _api_last)
-        if wait > 0:
-            await asyncio.sleep(wait)
+    for delay in (*RETRY_DELAYS, None):
         try:
-            response = await client.get(API_URL, params=params)
-        finally:
-            _api_last = time.monotonic()
-    response.raise_for_status()
+            async with _api_lock:
+                wait = API_INTERVAL - (time.monotonic() - _api_last)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                try:
+                    response = await client.get(API_URL, params=params)
+                finally:
+                    _api_last = time.monotonic()
+            response.raise_for_status()
+            break
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if delay is None or not _retryable(exc):
+                raise
+            await asyncio.sleep(delay)
     root = ET.fromstring(response.content)
     total_text = root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults") or "0"
     entries = [item for item in (parse_entry(entry) for entry in root.findall("a:entry", ATOM)) if item]
@@ -119,6 +135,17 @@ async def search(
 
 
 async def download(client: httpx.AsyncClient, url: str, dest: Path) -> str:
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            return await _download_once(client, url, dest)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if delay is None or not _retryable(exc):
+                raise
+            await asyncio.sleep(delay)
+    raise ArxivError(f"下载失败：{url}")
+
+
+async def _download_once(client: httpx.AsyncClient, url: str, dest: Path) -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
     total = 0
