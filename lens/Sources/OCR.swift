@@ -22,8 +22,29 @@ enum OCR {
                 top += strip * 2 / 3
             }
         }
-        lines = merge(lines, try recognizeRegion(image, offsetY: 0, level: .fast))
-        return lines
+        if !lines.contains(where: { containsCJK($0.text) }) {
+            lines = merge(lines, try recognizeRegion(image, offsetY: 0, level: .fast))
+        }
+        return lines.map { line in
+            containsCJK(line.text) ? line : TextLine(text: asciiPunctuation(line.text), rect: line.rect)
+        }
+    }
+
+    static func containsCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
+                || (0x3040...0x30FF).contains(scalar.value) || (0xAC00...0xD7AF).contains(scalar.value)
+        }
+    }
+
+    private static func asciiPunctuation(_ text: String) -> String {
+        let table: [Character: String] = [
+            "（": "(", "）": ")", "，": ", ", "：": ": ", "；": "; ", "！": "! ", "？": "? ",
+            "％": "%", "。": ". ", "“": "\"", "”": "\"", "‘": "'", "’": "'",
+        ]
+        var output = ""
+        for character in text { output += table[character] ?? String(character) }
+        return output.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespaces)
     }
 
     /// Adds lines from `extra` whose box does not substantially overlap a line already in `base`.
@@ -54,7 +75,7 @@ enum OCR {
         } else if level == .fast {
             request.recognitionLanguages = ["en-US"]
         } else {
-            request.recognitionLanguages = ["en-US", "zh-Hans"]
+            request.recognitionLanguages = ["zh-Hans", "en-US"]
         }
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         try handler.perform([request])
@@ -287,7 +308,8 @@ enum TextLayout {
                     continue
                 }
                 let ratio = rect.height / max(height, 1)
-                if ratio < 0.68 || ratio > 1.6 { continue }
+                let cjkGroup = group.contains { OCR.containsCJK($0.text) }
+                if ratio < (cjkGroup ? 0.6 : 0.68) || ratio > 1.6 { continue }
                 let block = bounds[index]
                 let overlap = min(rect.maxX, block.maxX) - max(rect.minX, block.minX)
                 if overlap < 0.3 * min(rect.width, block.width) { continue }
